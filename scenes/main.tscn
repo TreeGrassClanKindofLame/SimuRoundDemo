@@ -27,5 +27,6 @@ offset_top = 58.0
 offset_right = 910.0
 offset_bottom = 150.0
 text = "WASD: move    R: reset
+Units face their latest attempted move
 Collision: both units take 1 damage
 AI: blue idle, yellow random, red chase, purple flee"

@@ -6,6 +6,8 @@ Godot 4 simultaneous-turn grid game demo.
 
 - Fixed grid map with walls and floors
 - WASD player movement
+- Units face their latest attempted movement direction
+- Player and enemy units use temporary four-direction humanoid pixel sprites
 - One player action advances one enemy phase
 - Sequential enemy turns
 - Player has 5 HP

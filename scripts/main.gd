@@ -31,6 +31,7 @@ const DIR_RIGHT := Vector2i(1, 0)
 const ACTIONS := [DIR_NONE, DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]
 
 var player_pos := PLAYER_START
+var player_facing := DIR_RIGHT
 var player_hp := PLAYER_MAX_HP
 var player_alive := true
 var player_bump_timer := 0.0
@@ -176,6 +177,7 @@ func _play_sound(sound_name: String) -> void:
 
 func _reset_demo(play_reset_sound := false) -> void:
 	player_pos = PLAYER_START
+	player_facing = _random_direction()
 	player_hp = PLAYER_MAX_HP
 	player_alive = true
 	player_bump_timer = 0.0
@@ -202,6 +204,7 @@ func _create_enemy(pos: Vector2i, ai_type: int) -> Dictionary:
 	return {
 		"id": "%s_%s_%s" % [_ai_name(ai_type).to_lower(), pos.x, pos.y],
 		"pos": pos,
+		"facing": _random_direction(),
 		"ai": ai_type,
 		"hp": max_hp,
 		"max_hp": max_hp,
@@ -226,6 +229,8 @@ func _play_turn(player_delta: Vector2i) -> void:
 	queue_redraw()
 
 func _try_move_player(delta: Vector2i) -> void:
+	_face_player(delta)
+
 	var target: Vector2i = player_pos + delta
 	if not _is_walkable_cell(target):
 		_start_player_bump(delta)
@@ -302,6 +307,7 @@ func _try_move_enemy(index: int, delta: Vector2i) -> void:
 	if delta == DIR_NONE:
 		return
 
+	_face_enemy(index, delta)
 	var enemy: Dictionary = enemies[index]
 	var target: Vector2i = enemy["pos"] + delta
 	if not _is_walkable_cell(target):
@@ -370,6 +376,18 @@ func _start_player_bump(direction: Vector2i) -> void:
 	player_bump_dir = direction
 	player_bump_timer = BUMP_DURATION
 
+func _face_player(direction: Vector2i) -> void:
+	if direction != DIR_NONE:
+		player_facing = direction
+
+func _face_enemy(index: int, direction: Vector2i) -> void:
+	if direction == DIR_NONE:
+		return
+
+	var enemy: Dictionary = enemies[index]
+	enemy["facing"] = direction
+	enemies[index] = enemy
+
 func _start_enemy_bump(index: int, direction: Vector2i) -> void:
 	var enemy: Dictionary = enemies[index]
 	enemy["bump_dir"] = direction
@@ -434,6 +452,20 @@ func _enemy_max_hp(ai_type: int) -> int:
 			return 3
 	return 1
 
+func _random_direction() -> Vector2i:
+	var directions := [DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]
+	var direction: Vector2i = directions[rng.randi_range(0, directions.size() - 1)]
+	return direction
+
+func _back_direction(facing: Vector2i) -> Vector2i:
+	return -facing
+
+func _side_up_direction(facing: Vector2i) -> Vector2i:
+	return Vector2i(facing.y, -facing.x)
+
+func _side_down_direction(facing: Vector2i) -> Vector2i:
+	return Vector2i(-facing.y, facing.x)
+
 func _update_hud() -> void:
 	status_label.text = "Turn %d\nPlayer HP: %d/%d %s\nEnemies: %d\n%s" % [
 		turn_count,
@@ -478,7 +510,7 @@ func _draw_units() -> void:
 		if not player_alive:
 			player_alpha = player_death_timer / DEATH_DURATION
 			player_scale = maxf(0.15, player_alpha)
-		_draw_unit(player_pos, player_color, Color(0.85, 1.0, 0.90), _player_bump_offset(), player_alpha, player_scale)
+		_draw_unit(player_pos, player_color, Color(0.85, 1.0, 0.90), player_facing, _player_bump_offset(), player_alpha, player_scale, true)
 
 	for enemy in enemies:
 		if enemy["alive"] or float(enemy["death_timer"]) > 0.0:
@@ -491,23 +523,113 @@ func _draw_units() -> void:
 				alpha = float(enemy["death_timer"]) / DEATH_DURATION
 				unit_scale = maxf(0.15, alpha)
 
-			_draw_unit(enemy["pos"], enemy_color, Color(1.0, 0.92, 0.72), _enemy_bump_offset(enemy), alpha, unit_scale)
+			var facing: Vector2i = enemy["facing"]
+			_draw_unit(enemy["pos"], enemy_color, Color(1.0, 0.92, 0.72), facing, _enemy_bump_offset(enemy), alpha, unit_scale, false)
 			if enemy["alive"]:
 				_draw_enemy_hp(enemy)
 
-func _draw_unit(cell: Vector2i, body_color: Color, eye_color: Color, offset: Vector2, alpha: float, unit_scale: float) -> void:
+func _draw_unit(cell: Vector2i, body_color: Color, eye_color: Color, facing: Vector2i, offset: Vector2, alpha: float, unit_scale: float, is_player_unit: bool) -> void:
 	var base_rect := _cell_rect(cell).grow(-7)
 	var scaled_size := base_rect.size * unit_scale
 	var rect := Rect2(base_rect.position + (base_rect.size - scaled_size) * 0.5 + offset, scaled_size)
-	var outline := Color(0.03, 0.04, 0.05, alpha)
-	var body := Color(body_color.r, body_color.g, body_color.b, alpha)
-	var eyes := Color(eye_color.r, eye_color.g, eye_color.b, alpha)
+	if is_player_unit:
+		_draw_player_sprite(rect, facing, body_color, alpha, unit_scale)
+	else:
+		_draw_enemy_sprite(rect, facing, body_color, eye_color, alpha, unit_scale)
 
-	draw_rect(rect, outline)
-	draw_rect(rect.grow(-4), body)
-	draw_rect(Rect2(rect.position + Vector2(10, 14) * unit_scale, Vector2(7, 7) * unit_scale), eyes)
-	draw_rect(Rect2(rect.position + Vector2(25, 14) * unit_scale, Vector2(7, 7) * unit_scale), eyes)
-	draw_rect(Rect2(rect.position + Vector2(14, 29) * unit_scale, Vector2(17, 5) * unit_scale), outline)
+func _draw_player_sprite(rect: Rect2, facing: Vector2i, outfit_color: Color, alpha: float, unit_scale: float) -> void:
+	var outline := Color(0.04, 0.03, 0.02, alpha)
+	var skin := Color(0.96, 0.72, 0.50, alpha)
+	var hair := Color(0.36, 0.20, 0.10, alpha)
+	var outfit := Color(outfit_color.r, outfit_color.g, outfit_color.b, alpha)
+	var trim := Color(0.92, 0.74, 0.28, alpha)
+	var eye := Color(0.05, 0.20, 0.16, alpha)
+	var boot := Color(0.18, 0.10, 0.05, alpha)
+
+	_draw_sprite_shadow(rect, alpha, unit_scale)
+	if facing == DIR_UP:
+		_draw_px(rect, 9, 4, 16, 8, outline, unit_scale)
+		_draw_px(rect, 8, 6, 18, 10, hair, unit_scale)
+		_draw_px(rect, 7, 15, 20, 13, outfit, unit_scale)
+		_draw_px(rect, 11, 18, 12, 3, trim, unit_scale)
+		_draw_px(rect, 10, 28, 5, 4, boot, unit_scale)
+		_draw_px(rect, 20, 28, 5, 4, boot, unit_scale)
+	elif facing == DIR_DOWN:
+		_draw_px(rect, 8, 4, 18, 8, outline, unit_scale)
+		_draw_px(rect, 7, 5, 20, 8, hair, unit_scale)
+		_draw_px(rect, 10, 11, 14, 10, skin, unit_scale)
+		_draw_px(rect, 12, 15, 3, 3, eye, unit_scale)
+		_draw_px(rect, 20, 15, 3, 3, eye, unit_scale)
+		_draw_px(rect, 8, 21, 18, 8, outfit, unit_scale)
+		_draw_px(rect, 15, 22, 5, 3, trim, unit_scale)
+		_draw_px(rect, 10, 29, 5, 4, boot, unit_scale)
+		_draw_px(rect, 20, 29, 5, 4, boot, unit_scale)
+	elif facing == DIR_LEFT:
+		_draw_player_side_sprite(rect, -1, outfit, skin, hair, trim, eye, boot, outline, unit_scale)
+	elif facing == DIR_RIGHT:
+		_draw_player_side_sprite(rect, 1, outfit, skin, hair, trim, eye, boot, outline, unit_scale)
+
+func _draw_player_side_sprite(rect: Rect2, side: int, outfit: Color, skin: Color, hair: Color, trim: Color, eye: Color, boot: Color, outline: Color, unit_scale: float) -> void:
+	var x_face := 9 if side < 0 else 16
+	var x_back := 18 if side < 0 else 8
+	_draw_px(rect, x_back, 5, 12, 8, outline, unit_scale)
+	_draw_px(rect, x_back, 5, 13, 9, hair, unit_scale)
+	_draw_px(rect, x_face, 11, 10, 9, skin, unit_scale)
+	_draw_px(rect, x_face + (1 if side < 0 else 6), 15, 3, 3, eye, unit_scale)
+	_draw_px(rect, 10, 20, 15, 9, outfit, unit_scale)
+	_draw_px(rect, 12, 22, 10, 3, trim, unit_scale)
+	_draw_px(rect, 12, 29, 5, 4, boot, unit_scale)
+	_draw_px(rect, 21, 29, 5, 4, boot, unit_scale)
+
+func _draw_enemy_sprite(rect: Rect2, facing: Vector2i, armor_color: Color, eye_color: Color, alpha: float, unit_scale: float) -> void:
+	var outline := Color(0.03, 0.03, 0.05, alpha)
+	var metal := Color(0.30, 0.30, 0.38, alpha)
+	var dark_metal := Color(0.13, 0.12, 0.18, alpha)
+	var armor := Color(armor_color.r, armor_color.g, armor_color.b, alpha)
+	var crest := Color(0.94, 0.70, 0.22, alpha)
+	var eye := Color(eye_color.r, 0.12, 0.10, alpha)
+
+	_draw_sprite_shadow(rect, alpha, unit_scale)
+	if facing == DIR_UP:
+		_draw_px(rect, 8, 5, 18, 11, outline, unit_scale)
+		_draw_px(rect, 10, 4, 14, 12, armor, unit_scale)
+		_draw_px(rect, 16, 3, 3, 14, crest, unit_scale)
+		_draw_px(rect, 7, 15, 20, 13, armor, unit_scale)
+		_draw_px(rect, 10, 21, 14, 4, dark_metal, unit_scale)
+		_draw_px(rect, 9, 29, 6, 4, dark_metal, unit_scale)
+		_draw_px(rect, 20, 29, 6, 4, dark_metal, unit_scale)
+	elif facing == DIR_DOWN:
+		_draw_px(rect, 8, 4, 18, 10, outline, unit_scale)
+		_draw_px(rect, 10, 4, 14, 12, armor, unit_scale)
+		_draw_px(rect, 16, 3, 3, 13, crest, unit_scale)
+		_draw_px(rect, 10, 12, 14, 8, metal, unit_scale)
+		_draw_px(rect, 12, 15, 3, 3, eye, unit_scale)
+		_draw_px(rect, 20, 15, 3, 3, eye, unit_scale)
+		_draw_px(rect, 8, 21, 18, 8, armor, unit_scale)
+		_draw_px(rect, 10, 29, 6, 4, dark_metal, unit_scale)
+		_draw_px(rect, 20, 29, 6, 4, dark_metal, unit_scale)
+	elif facing == DIR_LEFT:
+		_draw_enemy_side_sprite(rect, -1, armor, metal, dark_metal, crest, eye, outline, unit_scale)
+	elif facing == DIR_RIGHT:
+		_draw_enemy_side_sprite(rect, 1, armor, metal, dark_metal, crest, eye, outline, unit_scale)
+
+func _draw_enemy_side_sprite(rect: Rect2, side: int, armor: Color, metal: Color, dark_metal: Color, crest: Color, eye: Color, outline: Color, unit_scale: float) -> void:
+	var face_x := 9 if side < 0 else 16
+	var helm_x := 10 if side < 0 else 12
+	_draw_px(rect, helm_x, 4, 14, 11, outline, unit_scale)
+	_draw_px(rect, helm_x, 5, 14, 10, armor, unit_scale)
+	_draw_px(rect, helm_x + 5, 3, 3, 13, crest, unit_scale)
+	_draw_px(rect, face_x, 12, 10, 8, metal, unit_scale)
+	_draw_px(rect, face_x + (1 if side < 0 else 6), 15, 3, 3, eye, unit_scale)
+	_draw_px(rect, 10, 21, 16, 8, armor, unit_scale)
+	_draw_px(rect, 12, 29, 6, 4, dark_metal, unit_scale)
+	_draw_px(rect, 21, 29, 6, 4, dark_metal, unit_scale)
+
+func _draw_sprite_shadow(rect: Rect2, alpha: float, unit_scale: float) -> void:
+	_draw_px(rect, 7, 30, 20, 3, Color(0.02, 0.02, 0.02, alpha * 0.55), unit_scale)
+
+func _draw_px(rect: Rect2, x: int, y: int, width: int, height: int, color: Color, unit_scale: float) -> void:
+	draw_rect(Rect2(rect.position + Vector2(x, y) * unit_scale, Vector2(width, height) * unit_scale), color)
 
 func _draw_enemy_hp(enemy: Dictionary) -> void:
 	var hp := int(enemy["hp"])
