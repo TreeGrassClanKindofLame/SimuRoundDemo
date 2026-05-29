@@ -8,9 +8,14 @@ Godot 4 simultaneous-turn grid game demo.
 - WASD player movement
 - One player action advances one enemy phase
 - Sequential enemy turns
-- Collision rule: if either unit is the player, the other unit dies
+- Player has 5 HP
+- Enemies have fixed HP by AI type: idle 1, random 1, flee 2, chase 3
+- Unit collision rule: both units take 1 damage, and movement is canceled
+- The same two units can only deal collision damage to each other once per turn
+- Wall collision rule: no damage, but the unit bumps back
 - Enemy AI types: idle, random, chase, flee
 - Chase AI uses `AStarGrid2D` pathfinding
+- Temporary code-generated sound effects
 - Temporary pixel-style shapes drawn in code
 
 ## Run

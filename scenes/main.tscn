@@ -1,29 +1,31 @@
-[gd_scene load_steps=2 format=3 uid="uid://bs6tbuin7rcvr"]
+[gd_scene format=3 uid="uid://bs6tbuin7rcvr"]
 
-[ext_resource type="Script" path="res://scripts/main.gd" id="1_v5r0o"]
+[ext_resource type="Script" uid="uid://cyq86vrg4echv" path="res://scripts/main.gd" id="1_v5r0o"]
 
-[node name="Main" type="Node2D"]
+[node name="Main" type="Node2D" unique_id=955311222]
 script = ExtResource("1_v5r0o")
 
-[node name="HUD" type="CanvasLayer" parent="."]
+[node name="HUD" type="CanvasLayer" parent="." unique_id=1749033196]
 
-[node name="Title" type="Label" parent="HUD"]
+[node name="Title" type="Label" parent="HUD" unique_id=1554540565]
 offset_left = 40.0
 offset_top = 24.0
 offset_right = 520.0
 offset_bottom = 54.0
 text = "Simu Round Demo"
 
-[node name="Status" type="Label" parent="HUD"]
+[node name="Status" type="Label" parent="HUD" unique_id=1460110272]
 offset_left = 40.0
 offset_top = 58.0
-offset_right = 380.0
-offset_bottom = 126.0
+offset_right = 420.0
+offset_bottom = 150.0
 text = "Turn 0"
 
-[node name="Help" type="Label" parent="HUD"]
+[node name="Help" type="Label" parent="HUD" unique_id=1110675165]
 offset_left = 430.0
 offset_top = 58.0
 offset_right = 910.0
-offset_bottom = 126.0
-text = "WASD: move    R: reset\nAI: blue idle, yellow random, red chase, purple flee"
+offset_bottom = 150.0
+text = "WASD: move    R: reset
+Collision: both units take 1 damage
+AI: blue idle, yellow random, red chase, purple flee"

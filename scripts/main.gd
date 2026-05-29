@@ -16,6 +16,13 @@ const MAP_ROWS := [
 	"###############",
 ]
 const PLAYER_START := Vector2i(1, 1)
+const PLAYER_MAX_HP := 5
+const DAMAGE_PER_COLLISION := 1
+const BUMP_DURATION := 0.16
+const HIT_DURATION := 0.20
+const DEATH_DURATION := 0.35
+const PLAYER_RESET_DELAY := 0.65
+const BUMP_PIXELS := 12.0
 const DIR_NONE := Vector2i(0, 0)
 const DIR_UP := Vector2i(0, -1)
 const DIR_DOWN := Vector2i(0, 1)
@@ -24,18 +31,73 @@ const DIR_RIGHT := Vector2i(1, 0)
 const ACTIONS := [DIR_NONE, DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]
 
 var player_pos := PLAYER_START
+var player_hp := PLAYER_MAX_HP
+var player_alive := true
+var player_bump_timer := 0.0
+var player_bump_dir := DIR_NONE
+var player_hit_timer := 0.0
+var player_death_timer := 0.0
+var reset_timer := 0.0
 var enemies: Array[Dictionary] = []
 var turn_count := 0
 var last_event := "Ready"
 var rng := RandomNumberGenerator.new()
 var astar_grid := AStarGrid2D.new()
+var sound_players: Dictionary = {}
+var turn_collision_pairs: Dictionary = {}
 
 @onready var status_label: Label = $HUD/Status
 
 func _ready() -> void:
 	rng.randomize()
+	_setup_audio()
 	_setup_astar_grid()
 	_reset_demo()
+
+func _process(delta: float) -> void:
+	var needs_redraw := false
+
+	if player_bump_timer > 0.0:
+		player_bump_timer = maxf(0.0, player_bump_timer - delta)
+		needs_redraw = true
+	if player_hit_timer > 0.0:
+		player_hit_timer = maxf(0.0, player_hit_timer - delta)
+		needs_redraw = true
+	if player_death_timer > 0.0:
+		player_death_timer = maxf(0.0, player_death_timer - delta)
+		needs_redraw = true
+
+	for index in range(enemies.size()):
+		var enemy: Dictionary = enemies[index]
+		var changed := false
+
+		var bump_timer := float(enemy["bump_timer"])
+		if bump_timer > 0.0:
+			enemy["bump_timer"] = maxf(0.0, bump_timer - delta)
+			changed = true
+
+		var hit_timer := float(enemy["hit_timer"])
+		if hit_timer > 0.0:
+			enemy["hit_timer"] = maxf(0.0, hit_timer - delta)
+			changed = true
+
+		var death_timer := float(enemy["death_timer"])
+		if death_timer > 0.0:
+			enemy["death_timer"] = maxf(0.0, death_timer - delta)
+			changed = true
+
+		if changed:
+			enemies[index] = enemy
+			needs_redraw = true
+
+	if reset_timer > 0.0:
+		reset_timer = maxf(0.0, reset_timer - delta)
+		if reset_timer == 0.0:
+			_reset_demo(true)
+		needs_redraw = true
+
+	if needs_redraw:
+		queue_redraw()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey):
@@ -55,7 +117,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_D:
 			_play_turn(DIR_RIGHT)
 		KEY_R:
-			_reset_demo()
+			_reset_demo(true)
 		_:
 			return
 
@@ -72,8 +134,55 @@ func _setup_astar_grid() -> void:
 			var cell := Vector2i(x, y)
 			astar_grid.set_point_solid(cell, _is_wall(cell))
 
-func _reset_demo() -> void:
+func _setup_audio() -> void:
+	sound_players["bump"] = _create_sound_player(_make_tone(90.0, 60.0, 0.08, 0.35))
+	sound_players["hit"] = _create_sound_player(_make_tone(420.0, 260.0, 0.10, 0.32))
+	sound_players["death"] = _create_sound_player(_make_tone(180.0, 70.0, 0.22, 0.35))
+	sound_players["reset"] = _create_sound_player(_make_tone(260.0, 520.0, 0.16, 0.25))
+
+func _create_sound_player(stream: AudioStream) -> AudioStreamPlayer:
+	var player := AudioStreamPlayer.new()
+	player.stream = stream
+	add_child(player)
+	return player
+
+func _make_tone(freq_start: float, freq_end: float, duration: float, volume: float) -> AudioStreamWAV:
+	var mix_rate := 22050
+	var sample_count := int(mix_rate * duration)
+	var data := PackedByteArray()
+
+	for index in range(sample_count):
+		var progress := float(index) / float(sample_count)
+		var frequency := lerpf(freq_start, freq_end, progress)
+		var envelope := 1.0 - progress
+		var wave := sin(TAU * frequency * float(index) / float(mix_rate))
+		var sample := int(clampf(128.0 + wave * 127.0 * volume * envelope, 0.0, 255.0))
+		data.append(sample)
+
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_8_BITS
+	stream.mix_rate = mix_rate
+	stream.stereo = false
+	stream.data = data
+	return stream
+
+func _play_sound(sound_name: String) -> void:
+	if not sound_players.has(sound_name):
+		return
+
+	var player: AudioStreamPlayer = sound_players[sound_name]
+	player.stop()
+	player.play()
+
+func _reset_demo(play_reset_sound := false) -> void:
 	player_pos = PLAYER_START
+	player_hp = PLAYER_MAX_HP
+	player_alive = true
+	player_bump_timer = 0.0
+	player_bump_dir = DIR_NONE
+	player_hit_timer = 0.0
+	player_death_timer = 0.0
+	reset_timer = 0.0
 	turn_count = 0
 	last_event = "Ready"
 	enemies = [
@@ -83,19 +192,35 @@ func _reset_demo() -> void:
 		_create_enemy(Vector2i(2, 7), AIType.FLEE),
 		_create_enemy(Vector2i(8, 5), AIType.RANDOM),
 	]
+	if play_reset_sound:
+		_play_sound("reset")
 	_update_hud()
 	queue_redraw()
 
 func _create_enemy(pos: Vector2i, ai_type: int) -> Dictionary:
+	var max_hp := _enemy_max_hp(ai_type)
 	return {
+		"id": "%s_%s_%s" % [_ai_name(ai_type).to_lower(), pos.x, pos.y],
 		"pos": pos,
 		"ai": ai_type,
+		"hp": max_hp,
+		"max_hp": max_hp,
 		"alive": true,
+		"bump_timer": 0.0,
+		"bump_dir": DIR_NONE,
+		"hit_timer": 0.0,
+		"death_timer": 0.0,
 	}
 
 func _play_turn(player_delta: Vector2i) -> void:
+	if not player_alive or reset_timer > 0.0:
+		return
+
+	turn_collision_pairs.clear()
 	_try_move_player(player_delta)
-	_take_enemy_turns()
+	if player_alive:
+		_take_enemy_turns()
+
 	turn_count += 1
 	_update_hud()
 	queue_redraw()
@@ -103,13 +228,22 @@ func _play_turn(player_delta: Vector2i) -> void:
 func _try_move_player(delta: Vector2i) -> void:
 	var target: Vector2i = player_pos + delta
 	if not _is_walkable_cell(target):
+		_start_player_bump(delta)
+		_play_sound("bump")
 		last_event = "Player bumps into a wall"
 		return
 
 	var enemy_index := _enemy_at(target)
 	if enemy_index != -1:
-		_kill_enemy(enemy_index)
-		last_event = "Player collides with enemy"
+		_start_player_bump(delta)
+		if _register_collision_pair("player", _enemy_unit_id(enemy_index)):
+			_damage_player(DAMAGE_PER_COLLISION)
+			_damage_enemy(enemy_index, DAMAGE_PER_COLLISION)
+			_play_sound("hit")
+			last_event = "Player and enemy both take damage"
+		else:
+			_play_sound("bump")
+			last_event = "Player and enemy already collided this turn"
 		return
 
 	player_pos = target
@@ -117,6 +251,8 @@ func _try_move_player(delta: Vector2i) -> void:
 
 func _take_enemy_turns() -> void:
 	for index in range(enemies.size()):
+		if not player_alive:
+			return
 		if not enemies[index]["alive"]:
 			continue
 
@@ -169,23 +305,75 @@ func _try_move_enemy(index: int, delta: Vector2i) -> void:
 	var enemy: Dictionary = enemies[index]
 	var target: Vector2i = enemy["pos"] + delta
 	if not _is_walkable_cell(target):
+		_start_enemy_bump(index, delta)
+		_play_sound("bump")
 		return
 
-	if target == player_pos:
-		_kill_enemy(index)
-		last_event = "%s enemy collides with player" % _ai_name(enemy["ai"])
+	if target == player_pos and player_alive:
+		_start_enemy_bump(index, delta)
+		if _register_collision_pair(_enemy_unit_id(index), "player"):
+			_damage_enemy(index, DAMAGE_PER_COLLISION)
+			_damage_player(DAMAGE_PER_COLLISION)
+			_play_sound("hit")
+			last_event = "%s enemy and player both take damage" % _ai_name(enemy["ai"])
+		else:
+			_play_sound("bump")
+			last_event = "%s enemy and player already collided this turn" % _ai_name(enemy["ai"])
 		return
 
 	var other_enemy_index := _enemy_at(target)
 	if other_enemy_index != -1:
+		_start_enemy_bump(index, delta)
+		if _register_collision_pair(_enemy_unit_id(index), _enemy_unit_id(other_enemy_index)):
+			_damage_enemy(index, DAMAGE_PER_COLLISION)
+			_damage_enemy(other_enemy_index, DAMAGE_PER_COLLISION)
+			_play_sound("hit")
+			last_event = "Two enemies collide and both take damage"
+		else:
+			_play_sound("bump")
+			last_event = "Those enemies already collided this turn"
 		return
 
 	enemy["pos"] = target
 	enemies[index] = enemy
 
-func _kill_enemy(index: int) -> void:
+func _damage_player(amount: int) -> void:
+	if not player_alive:
+		return
+
+	player_hp = maxi(0, player_hp - amount)
+	player_hit_timer = HIT_DURATION
+	if player_hp == 0:
+		player_alive = false
+		player_death_timer = DEATH_DURATION
+		reset_timer = PLAYER_RESET_DELAY
+		last_event = "Player died. Resetting..."
+		_play_sound("death")
+
+func _damage_enemy(index: int, amount: int) -> void:
+	if index < 0 or index >= enemies.size():
+		return
+
 	var enemy: Dictionary = enemies[index]
-	enemy["alive"] = false
+	if not enemy["alive"]:
+		return
+
+	enemy["hp"] = maxi(0, int(enemy["hp"]) - amount)
+	enemy["hit_timer"] = HIT_DURATION
+	if int(enemy["hp"]) == 0:
+		enemy["alive"] = false
+		enemy["death_timer"] = DEATH_DURATION
+		_play_sound("death")
+	enemies[index] = enemy
+
+func _start_player_bump(direction: Vector2i) -> void:
+	player_bump_dir = direction
+	player_bump_timer = BUMP_DURATION
+
+func _start_enemy_bump(index: int, direction: Vector2i) -> void:
+	var enemy: Dictionary = enemies[index]
+	enemy["bump_dir"] = direction
+	enemy["bump_timer"] = BUMP_DURATION
 	enemies[index] = enemy
 
 func _enemy_at(cell: Vector2i) -> int:
@@ -193,6 +381,21 @@ func _enemy_at(cell: Vector2i) -> int:
 		if enemies[index]["alive"] and enemies[index]["pos"] == cell:
 			return index
 	return -1
+
+func _enemy_unit_id(index: int) -> String:
+	if index < 0 or index >= enemies.size():
+		return "missing"
+	return str(enemies[index]["id"])
+
+func _register_collision_pair(unit_a: String, unit_b: String) -> bool:
+	var pair := [unit_a, unit_b]
+	pair.sort()
+	var key := "%s|%s" % [pair[0], pair[1]]
+	if turn_collision_pairs.has(key):
+		return false
+
+	turn_collision_pairs[key] = true
+	return true
 
 func _is_walkable_cell(cell: Vector2i) -> bool:
 	return _is_inside_map(cell) and not _is_wall(cell)
@@ -219,8 +422,33 @@ func _living_enemy_count() -> int:
 			count += 1
 	return count
 
+func _enemy_max_hp(ai_type: int) -> int:
+	match ai_type:
+		AIType.IDLE:
+			return 1
+		AIType.RANDOM:
+			return 1
+		AIType.FLEE:
+			return 2
+		AIType.CHASE:
+			return 3
+	return 1
+
 func _update_hud() -> void:
-	status_label.text = "Turn %d\nEnemies: %d\n%s" % [turn_count, _living_enemy_count(), last_event]
+	status_label.text = "Turn %d\nPlayer HP: %d/%d %s\nEnemies: %d\n%s" % [
+		turn_count,
+		player_hp,
+		PLAYER_MAX_HP,
+		_player_hp_bar(),
+		_living_enemy_count(),
+		last_event,
+	]
+
+func _player_hp_bar() -> String:
+	var filled := ""
+	for index in range(PLAYER_MAX_HP):
+		filled += "#" if index < player_hp else "-"
+	return "[%s]" % filled
 
 func _draw() -> void:
 	_draw_map()
@@ -241,19 +469,70 @@ func _draw_map() -> void:
 			draw_rect(rect, Color(0.07, 0.08, 0.09), false, 2.0)
 
 func _draw_units() -> void:
-	_draw_unit(player_pos, Color(0.15, 0.78, 0.42), Color(0.85, 1.0, 0.90))
+	if player_alive or player_death_timer > 0.0:
+		var player_color := Color(0.15, 0.78, 0.42)
+		var player_alpha := 1.0
+		var player_scale := 1.0
+		if player_hit_timer > 0.0:
+			player_color = player_color.lerp(Color.WHITE, 0.65)
+		if not player_alive:
+			player_alpha = player_death_timer / DEATH_DURATION
+			player_scale = maxf(0.15, player_alpha)
+		_draw_unit(player_pos, player_color, Color(0.85, 1.0, 0.90), _player_bump_offset(), player_alpha, player_scale)
 
 	for enemy in enemies:
-		if enemy["alive"]:
-			_draw_unit(enemy["pos"], _enemy_color(enemy["ai"]), Color(1.0, 0.92, 0.72))
+		if enemy["alive"] or float(enemy["death_timer"]) > 0.0:
+			var enemy_color := _enemy_color(enemy["ai"])
+			var alpha := 1.0
+			var unit_scale := 1.0
+			if float(enemy["hit_timer"]) > 0.0:
+				enemy_color = enemy_color.lerp(Color.WHITE, 0.65)
+			if not enemy["alive"]:
+				alpha = float(enemy["death_timer"]) / DEATH_DURATION
+				unit_scale = maxf(0.15, alpha)
 
-func _draw_unit(cell: Vector2i, body_color: Color, eye_color: Color) -> void:
-	var rect := _cell_rect(cell).grow(-7)
-	draw_rect(rect, Color(0.03, 0.04, 0.05))
-	draw_rect(rect.grow(-4), body_color)
-	draw_rect(Rect2(rect.position + Vector2(10, 14), Vector2(7, 7)), eye_color)
-	draw_rect(Rect2(rect.position + Vector2(25, 14), Vector2(7, 7)), eye_color)
-	draw_rect(Rect2(rect.position + Vector2(14, 29), Vector2(17, 5)), Color(0.03, 0.04, 0.05))
+			_draw_unit(enemy["pos"], enemy_color, Color(1.0, 0.92, 0.72), _enemy_bump_offset(enemy), alpha, unit_scale)
+			if enemy["alive"]:
+				_draw_enemy_hp(enemy)
+
+func _draw_unit(cell: Vector2i, body_color: Color, eye_color: Color, offset: Vector2, alpha: float, unit_scale: float) -> void:
+	var base_rect := _cell_rect(cell).grow(-7)
+	var scaled_size := base_rect.size * unit_scale
+	var rect := Rect2(base_rect.position + (base_rect.size - scaled_size) * 0.5 + offset, scaled_size)
+	var outline := Color(0.03, 0.04, 0.05, alpha)
+	var body := Color(body_color.r, body_color.g, body_color.b, alpha)
+	var eyes := Color(eye_color.r, eye_color.g, eye_color.b, alpha)
+
+	draw_rect(rect, outline)
+	draw_rect(rect.grow(-4), body)
+	draw_rect(Rect2(rect.position + Vector2(10, 14) * unit_scale, Vector2(7, 7) * unit_scale), eyes)
+	draw_rect(Rect2(rect.position + Vector2(25, 14) * unit_scale, Vector2(7, 7) * unit_scale), eyes)
+	draw_rect(Rect2(rect.position + Vector2(14, 29) * unit_scale, Vector2(17, 5) * unit_scale), outline)
+
+func _draw_enemy_hp(enemy: Dictionary) -> void:
+	var hp := int(enemy["hp"])
+	var max_hp := int(enemy["max_hp"])
+	var start := _cell_rect(enemy["pos"]).position + Vector2(8, -9) + _enemy_bump_offset(enemy)
+	for index in range(max_hp):
+		var pip_rect := Rect2(start + Vector2(index * 10, 0), Vector2(7, 5))
+		var pip_color := Color(0.88, 0.16, 0.18) if index < hp else Color(0.20, 0.05, 0.06)
+		draw_rect(pip_rect, pip_color)
+
+func _player_bump_offset() -> Vector2:
+	return _bump_offset(player_bump_timer, player_bump_dir)
+
+func _enemy_bump_offset(enemy: Dictionary) -> Vector2:
+	var timer := float(enemy["bump_timer"])
+	var direction: Vector2i = enemy["bump_dir"]
+	return _bump_offset(timer, direction)
+
+func _bump_offset(timer: float, direction: Vector2i) -> Vector2:
+	if timer <= 0.0 or direction == DIR_NONE:
+		return Vector2.ZERO
+
+	var progress := 1.0 - timer / BUMP_DURATION
+	var distance := sin(progress * PI) * BUMP_PIXELS
+	return Vector2(direction) * distance
 
 func _cell_rect(cell: Vector2i) -> Rect2:
 	var pixel_pos := Vector2(cell.x * TILE_SIZE, cell.y * TILE_SIZE)
