@@ -6,6 +6,7 @@ Godot 4 simultaneous-turn grid game demo.
 
 - Fixed grid map with walls and floors
 - WASD player movement
+- Press 1/2 to switch between the normal map and the boss arena
 - Units face their latest attempted movement direction
 - Player and enemy units use temporary four-direction humanoid pixel sprites
 - One player action advances one enemy phase
@@ -18,6 +19,8 @@ Godot 4 simultaneous-turn grid game demo.
 - Wall collision rule: no damage, but the unit bumps back
 - Enemy AI types: idle, random, chase, flee
 - Chase AI uses `AStarGrid2D` pathfinding
+- Boss arena has an open map and a 2x2 boss with 5 HP
+- Boss moves 1 tile toward the player, charges a locked front 2x2 warning area, attacks on its next action, then spends 1 action stunned
 - Temporary code-generated sound effects
 - Temporary pixel-style shapes drawn in code
 
