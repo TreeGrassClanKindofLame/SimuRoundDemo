@@ -16,9 +16,9 @@ text = "Simu Round Demo"
 
 [node name="Status" type="Label" parent="HUD" unique_id=1460110272]
 offset_left = 40.0
-offset_top = 58.0
+offset_top = 96.0
 offset_right = 420.0
-offset_bottom = 150.0
+offset_bottom = 168.0
 text = "Turn 0"
 
 [node name="Help" type="Label" parent="HUD" unique_id=1110675165]
@@ -29,4 +29,5 @@ offset_bottom = 150.0
 text = "WASD: move    R: reset
 Units face their latest attempted move
 Collision: both units take 1 damage
+Back collision: victim takes +1 damage
 AI: blue idle, yellow random, red chase, purple flee"

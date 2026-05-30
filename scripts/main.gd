@@ -18,6 +18,7 @@ const MAP_ROWS := [
 const PLAYER_START := Vector2i(1, 1)
 const PLAYER_MAX_HP := 5
 const DAMAGE_PER_COLLISION := 1
+const BACK_COLLISION_BONUS_DAMAGE := 1
 const BUMP_DURATION := 0.16
 const HIT_DURATION := 0.20
 const DEATH_DURATION := 0.35
@@ -29,6 +30,17 @@ const DIR_DOWN := Vector2i(0, 1)
 const DIR_LEFT := Vector2i(-1, 0)
 const DIR_RIGHT := Vector2i(1, 0)
 const ACTIONS := [DIR_NONE, DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]
+const HEART_ORIGIN := Vector2(40, 70)
+const HEART_BLOCK := 3.0
+const HEART_GAP := 10.0
+const HEART_PATTERN := [
+	"01100110",
+	"11111111",
+	"11111111",
+	"01111110",
+	"00111100",
+	"00011000",
+]
 
 var player_pos := PLAYER_START
 var player_facing := DIR_RIGHT
@@ -242,10 +254,15 @@ func _try_move_player(delta: Vector2i) -> void:
 	if enemy_index != -1:
 		_start_player_bump(delta)
 		if _register_collision_pair("player", _enemy_unit_id(enemy_index)):
-			_damage_player(DAMAGE_PER_COLLISION)
-			_damage_enemy(enemy_index, DAMAGE_PER_COLLISION)
+			var enemy: Dictionary = enemies[enemy_index]
+			var enemy_pos: Vector2i = enemy["pos"]
+			var enemy_facing: Vector2i = enemy["facing"]
+			var player_damage := _collision_damage(player_pos, player_facing, enemy_pos)
+			var enemy_damage := _collision_damage(enemy_pos, enemy_facing, player_pos)
+			_damage_player(player_damage)
+			_damage_enemy(enemy_index, enemy_damage)
 			_play_sound("hit")
-			last_event = "Player and enemy both take damage"
+			last_event = _collision_event_text("Player and enemy both take damage", "Player", player_damage, "enemy", enemy_damage)
 		else:
 			_play_sound("bump")
 			last_event = "Player and enemy already collided this turn"
@@ -318,10 +335,14 @@ func _try_move_enemy(index: int, delta: Vector2i) -> void:
 	if target == player_pos and player_alive:
 		_start_enemy_bump(index, delta)
 		if _register_collision_pair(_enemy_unit_id(index), "player"):
-			_damage_enemy(index, DAMAGE_PER_COLLISION)
-			_damage_player(DAMAGE_PER_COLLISION)
+			var enemy_pos: Vector2i = enemy["pos"]
+			var enemy_facing: Vector2i = enemy["facing"]
+			var enemy_damage := _collision_damage(enemy_pos, enemy_facing, player_pos)
+			var player_damage := _collision_damage(player_pos, player_facing, enemy_pos)
+			_damage_enemy(index, enemy_damage)
+			_damage_player(player_damage)
 			_play_sound("hit")
-			last_event = "%s enemy and player both take damage" % _ai_name(enemy["ai"])
+			last_event = _collision_event_text("%s enemy and player both take damage" % _ai_name(enemy["ai"]), "%s enemy" % _ai_name(enemy["ai"]), enemy_damage, "player", player_damage)
 		else:
 			_play_sound("bump")
 			last_event = "%s enemy and player already collided this turn" % _ai_name(enemy["ai"])
@@ -331,10 +352,17 @@ func _try_move_enemy(index: int, delta: Vector2i) -> void:
 	if other_enemy_index != -1:
 		_start_enemy_bump(index, delta)
 		if _register_collision_pair(_enemy_unit_id(index), _enemy_unit_id(other_enemy_index)):
-			_damage_enemy(index, DAMAGE_PER_COLLISION)
-			_damage_enemy(other_enemy_index, DAMAGE_PER_COLLISION)
+			var other_enemy: Dictionary = enemies[other_enemy_index]
+			var enemy_pos: Vector2i = enemy["pos"]
+			var enemy_facing: Vector2i = enemy["facing"]
+			var other_enemy_pos: Vector2i = other_enemy["pos"]
+			var other_enemy_facing: Vector2i = other_enemy["facing"]
+			var enemy_damage := _collision_damage(enemy_pos, enemy_facing, other_enemy_pos)
+			var other_enemy_damage := _collision_damage(other_enemy_pos, other_enemy_facing, enemy_pos)
+			_damage_enemy(index, enemy_damage)
+			_damage_enemy(other_enemy_index, other_enemy_damage)
 			_play_sound("hit")
-			last_event = "Two enemies collide and both take damage"
+			last_event = _collision_event_text("Two enemies collide and both take damage", "moving enemy", enemy_damage, "target enemy", other_enemy_damage)
 		else:
 			_play_sound("bump")
 			last_event = "Those enemies already collided this turn"
@@ -415,6 +443,25 @@ func _register_collision_pair(unit_a: String, unit_b: String) -> bool:
 	turn_collision_pairs[key] = true
 	return true
 
+func _collision_damage(victim_pos: Vector2i, victim_facing: Vector2i, attacker_pos: Vector2i) -> int:
+	var amount := DAMAGE_PER_COLLISION
+	if _is_hit_from_behind(victim_pos, victim_facing, attacker_pos):
+		amount += BACK_COLLISION_BONUS_DAMAGE
+	return amount
+
+func _is_hit_from_behind(victim_pos: Vector2i, victim_facing: Vector2i, attacker_pos: Vector2i) -> bool:
+	return attacker_pos == victim_pos + _back_direction(victim_facing)
+
+func _collision_event_text(base_text: String, unit_a_name: String, unit_a_damage: int, unit_b_name: String, unit_b_damage: int) -> String:
+	var back_hits := PackedStringArray()
+	if unit_a_damage > DAMAGE_PER_COLLISION:
+		back_hits.append("%s hit from behind" % unit_a_name)
+	if unit_b_damage > DAMAGE_PER_COLLISION:
+		back_hits.append("%s hit from behind" % unit_b_name)
+	if back_hits.is_empty():
+		return base_text
+	return "%s (%s)" % [base_text, ", ".join(back_hits)]
+
 func _is_walkable_cell(cell: Vector2i) -> bool:
 	return _is_inside_map(cell) and not _is_wall(cell)
 
@@ -467,24 +514,38 @@ func _side_down_direction(facing: Vector2i) -> Vector2i:
 	return Vector2i(-facing.y, facing.x)
 
 func _update_hud() -> void:
-	status_label.text = "Turn %d\nPlayer HP: %d/%d %s\nEnemies: %d\n%s" % [
+	status_label.text = "Turn %d\nEnemies: %d\n%s" % [
 		turn_count,
-		player_hp,
-		PLAYER_MAX_HP,
-		_player_hp_bar(),
 		_living_enemy_count(),
 		last_event,
 	]
 
-func _player_hp_bar() -> String:
-	var filled := ""
-	for index in range(PLAYER_MAX_HP):
-		filled += "#" if index < player_hp else "-"
-	return "[%s]" % filled
-
 func _draw() -> void:
+	_draw_player_hp_hearts()
 	_draw_map()
 	_draw_units()
+
+func _draw_player_hp_hearts() -> void:
+	var heart_width := HEART_PATTERN[0].length() * HEART_BLOCK
+	for heart_index in range(PLAYER_MAX_HP):
+		var heart_pos := HEART_ORIGIN + Vector2(heart_index * (heart_width + HEART_GAP), 0)
+		var filled := heart_index < player_hp
+		_draw_heart_icon(heart_pos, filled)
+
+func _draw_heart_icon(heart_pos: Vector2, filled: bool) -> void:
+	var fill_color := Color(0.91, 0.12, 0.18) if filled else Color(0.18, 0.10, 0.12)
+	var shadow_color := Color(0.03, 0.02, 0.02, 0.60)
+	var shine_color := Color(1.0, 0.46, 0.50) if filled else Color(0.30, 0.18, 0.20)
+	for y in range(HEART_PATTERN.size()):
+		var row: String = HEART_PATTERN[y]
+		for x in range(row.length()):
+			if row.substr(x, 1) != "1":
+				continue
+			var block_pos := heart_pos + Vector2(x, y) * HEART_BLOCK
+			draw_rect(Rect2(block_pos + Vector2(1, 1), Vector2(HEART_BLOCK, HEART_BLOCK)), shadow_color)
+			draw_rect(Rect2(block_pos, Vector2(HEART_BLOCK, HEART_BLOCK)), fill_color)
+	if filled:
+		draw_rect(Rect2(heart_pos + Vector2(HEART_BLOCK, HEART_BLOCK), Vector2(HEART_BLOCK, HEART_BLOCK)), shine_color)
 
 func _draw_map() -> void:
 	for y in range(_map_height()):

@@ -10,9 +10,10 @@ Godot 4 simultaneous-turn grid game demo.
 - Player and enemy units use temporary four-direction humanoid pixel sprites
 - One player action advances one enemy phase
 - Sequential enemy turns
-- Player has 5 HP
+- Player has 5 HP shown as pixel heart icons
 - Enemies have fixed HP by AI type: idle 1, random 1, flee 2, chase 3
 - Unit collision rule: both units take 1 damage, and movement is canceled
+- If a unit is hit from behind during a collision, that unit takes 1 extra damage
 - The same two units can only deal collision damage to each other once per turn
 - Wall collision rule: no damage, but the unit bumps back
 - Enemy AI types: idle, random, chase, flee
