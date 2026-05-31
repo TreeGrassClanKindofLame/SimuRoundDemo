@@ -6,6 +6,7 @@ Godot 4 simultaneous-turn grid game demo.
 
 - Fixed grid map with walls and floors
 - WASD player movement
+- Press V to toggle enemy detection ranges
 - Units face their latest attempted movement direction
 - Player and enemy units use temporary four-direction humanoid pixel sprites
 - One player action advances one enemy phase
@@ -16,6 +17,10 @@ Godot 4 simultaneous-turn grid game demo.
 - Monster-to-monster collision causes no damage
 - The same two units can only deal collision damage to each other once per turn
 - Wall collision rule: no damage, but the unit bumps back
+- Enemies start in IDLE state, show their current state, and switch to COMBAT when the player enters their wall-blocked detection cone
+- Newly alerted enemies wait until their next turn before chasing
+- COMBAT enemies use `AStarGrid2D` to chase the player while avoiding walls and other living enemies
+- COMBAT enemies bump into the player without dealing damage
 - Temporary code-generated sound effects
 - Temporary pixel-style shapes drawn in code
 

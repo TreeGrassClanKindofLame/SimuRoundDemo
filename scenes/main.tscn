@@ -26,9 +26,9 @@ offset_left = 430.0
 offset_top = 58.0
 offset_right = 980.0
 offset_bottom = 178.0
-text = "WASD: move    R: reset
+text = "WASD: move    R: reset    V: toggle vision
 Units face their latest attempted move
 Front hit: player and enemy both take damage
 Side/back hit: enemy takes 1/2 damage
-Monster-to-monster collision deals no damage
-AI: blue idle blockers"
+IDLE enemies detect through a blocked cone
+COMBAT enemies chase next turn"

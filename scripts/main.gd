@@ -2,6 +2,7 @@ extends Node2D
 
 enum AIType { IDLE }
 enum CollisionSide { FRONT, SIDE, BACK }
+enum EnemyState { IDLE, COMBAT }
 
 const TILE_SIZE := 48
 const MAP_ORIGIN := Vector2(48, 192)
@@ -30,6 +31,7 @@ const DIR_UP := Vector2i(0, -1)
 const DIR_DOWN := Vector2i(0, 1)
 const DIR_LEFT := Vector2i(-1, 0)
 const DIR_RIGHT := Vector2i(1, 0)
+const MOVE_ACTIONS := [DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]
 const HEART_ORIGIN := Vector2(40, 70)
 const HEART_BLOCK := 3.0
 const HEART_GAP := 10.0
@@ -54,7 +56,9 @@ var reset_timer := 0.0
 var enemies: Array[Dictionary] = []
 var turn_count := 0
 var last_event := "Ready"
+var show_detection_ranges := false
 var rng := RandomNumberGenerator.new()
+var astar_grid := AStarGrid2D.new()
 var sound_players: Dictionary = {}
 var turn_collision_pairs: Dictionary = {}
 
@@ -81,6 +85,11 @@ func _process(delta: float) -> void:
 	for index in range(enemies.size()):
 		var enemy: Dictionary = enemies[index]
 		var changed := false
+
+		var bump_timer := float(enemy["bump_timer"])
+		if bump_timer > 0.0:
+			enemy["bump_timer"] = maxf(0.0, bump_timer - delta)
+			changed = true
 
 		var hit_timer := float(enemy["hit_timer"])
 		if hit_timer > 0.0:
@@ -124,6 +133,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			_play_turn(DIR_RIGHT)
 		KEY_R:
 			_reset_demo(true)
+		KEY_V:
+			show_detection_ranges = not show_detection_ranges
+			last_event = "Detection ranges shown" if show_detection_ranges else "Detection ranges hidden"
+			_update_hud()
+			queue_redraw()
 		_:
 			return
 
@@ -206,6 +220,10 @@ func _create_enemy(pos: Vector2i, ai_type: int) -> Dictionary:
 		"hp": 2,
 		"max_hp": 2,
 		"alive": true,
+		"state": EnemyState.IDLE,
+		"just_alerted": false,
+		"bump_timer": 0.0,
+		"bump_dir": DIR_NONE,
 		"hit_timer": 0.0,
 		"death_timer": 0.0,
 	}
@@ -216,6 +234,10 @@ func _play_turn(player_delta: Vector2i) -> void:
 
 	turn_collision_pairs.clear()
 	_try_move_player(player_delta)
+	if player_alive:
+		_update_enemy_alerts()
+	if player_alive:
+		_take_enemy_turns()
 	turn_count += 1
 	_update_hud()
 	queue_redraw()
@@ -253,6 +275,75 @@ func _try_move_player(delta: Vector2i) -> void:
 	player_pos = target
 	last_event = "Player moves"
 
+func _update_enemy_alerts() -> void:
+	var alerted_count := 0
+	for index in range(enemies.size()):
+		var enemy: Dictionary = enemies[index]
+		if not enemy["alive"] or int(enemy["state"]) != EnemyState.IDLE:
+			continue
+		if _enemy_can_detect_player(enemy):
+			enemy["state"] = EnemyState.COMBAT
+			enemy["just_alerted"] = true
+			enemies[index] = enemy
+			alerted_count += 1
+
+	if alerted_count == 1:
+		last_event = "An enemy spotted the player"
+	elif alerted_count > 1:
+		last_event = "%d enemies spotted the player" % alerted_count
+
+func _take_enemy_turns() -> void:
+	for index in range(enemies.size()):
+		if not player_alive:
+			return
+		if not enemies[index]["alive"] or int(enemies[index]["state"]) != EnemyState.COMBAT:
+			continue
+
+		var enemy: Dictionary = enemies[index]
+		if bool(enemy["just_alerted"]):
+			enemy["just_alerted"] = false
+			enemies[index] = enemy
+			continue
+
+		var delta := _decide_enemy_chase_action(index)
+		_try_move_enemy(index, delta)
+
+func _decide_enemy_chase_action(index: int) -> Vector2i:
+	_setup_chase_astar(index)
+	var enemy_pos: Vector2i = enemies[index]["pos"]
+	var path: Array[Vector2i] = astar_grid.get_id_path(enemy_pos, player_pos)
+	if path.size() < 2:
+		return DIR_NONE
+	return path[1] - enemy_pos
+
+func _try_move_enemy(index: int, delta: Vector2i) -> void:
+	if delta == DIR_NONE:
+		return
+
+	_face_enemy(index, delta)
+	var enemy: Dictionary = enemies[index]
+	var target: Vector2i = enemy["pos"] + delta
+	if not _is_walkable_cell(target):
+		_start_enemy_bump(index, delta)
+		_play_sound("bump")
+		return
+
+	if target == player_pos:
+		_start_enemy_bump(index, delta)
+		_play_sound("bump")
+		last_event = "Enemy bumps into player"
+		return
+
+	if _enemy_at(target) != -1:
+		_start_enemy_bump(index, delta)
+		_play_sound("bump")
+		last_event = "Enemy bumps into enemy"
+		return
+
+	enemy["pos"] = target
+	enemies[index] = enemy
+	last_event = "Enemy chases player"
+
 func _damage_player(amount: int) -> void:
 	if not player_alive:
 		return
@@ -289,6 +380,20 @@ func _start_player_bump(direction: Vector2i) -> void:
 func _face_player(direction: Vector2i) -> void:
 	if direction != DIR_NONE:
 		player_facing = direction
+
+func _face_enemy(index: int, direction: Vector2i) -> void:
+	if direction == DIR_NONE:
+		return
+
+	var enemy: Dictionary = enemies[index]
+	enemy["facing"] = direction
+	enemies[index] = enemy
+
+func _start_enemy_bump(index: int, direction: Vector2i) -> void:
+	var enemy: Dictionary = enemies[index]
+	enemy["bump_dir"] = direction
+	enemy["bump_timer"] = BUMP_DURATION
+	enemies[index] = enemy
 
 func _enemy_at(cell: Vector2i) -> int:
 	for index in range(enemies.size()):
@@ -336,6 +441,72 @@ func _player_enemy_collision_event_text(collision_side: int) -> String:
 			return "Back collision: enemy takes heavy damage"
 	return "Side collision: enemy takes damage"
 
+func _setup_chase_astar(current_enemy_index: int) -> void:
+	astar_grid.region = Rect2i(Vector2i.ZERO, Vector2i(_map_width(), _map_height()))
+	astar_grid.cell_size = Vector2(1, 1)
+	astar_grid.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+	astar_grid.update()
+
+	for y in range(_map_height()):
+		for x in range(_map_width()):
+			var cell := Vector2i(x, y)
+			astar_grid.set_point_solid(cell, _is_wall(cell))
+
+	for index in range(enemies.size()):
+		if index == current_enemy_index or not enemies[index]["alive"]:
+			continue
+		astar_grid.set_point_solid(enemies[index]["pos"], true)
+
+func _enemy_can_detect_player(enemy: Dictionary) -> bool:
+	return _has_cell(_visible_detection_cells(enemy), player_pos)
+
+func _visible_detection_cells(enemy: Dictionary) -> Array[Vector2i]:
+	var visible_cells: Array[Vector2i] = []
+	var origin: Vector2i = enemy["pos"]
+	for cell in _raw_detection_cells(origin, enemy["facing"]):
+		if not _is_inside_map(cell) or _has_cell(visible_cells, cell):
+			continue
+		if _has_detection_line_of_sight(origin, cell):
+			visible_cells.append(cell)
+	return visible_cells
+
+func _raw_detection_cells(origin: Vector2i, facing: Vector2i) -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	var side := _side_up_direction(facing)
+	cells.append(origin + side)
+	cells.append(origin - side)
+	for offset in range(-1, 2):
+		cells.append(origin + facing + side * offset)
+	for offset in range(-2, 3):
+		cells.append(origin + facing * 2 + side * offset)
+	return cells
+
+func _has_detection_line_of_sight(origin: Vector2i, target: Vector2i) -> bool:
+	if not _is_inside_map(target) or _is_wall(target):
+		return false
+
+	var delta := target - origin
+	var steps := maxi(abs(delta.x), abs(delta.y))
+	var visited: Array[Vector2i] = []
+	for step in range(1, steps + 1):
+		var progress := float(step) / float(steps)
+		var cell := Vector2i(
+			int(round(float(origin.x) + float(delta.x) * progress)),
+			int(round(float(origin.y) + float(delta.y) * progress))
+		)
+		if cell == origin or _has_cell(visited, cell):
+			continue
+		visited.append(cell)
+		if _is_wall(cell):
+			return false
+	return true
+
+func _has_cell(cells: Array, target: Vector2i) -> bool:
+	for cell in cells:
+		if cell == target:
+			return true
+	return false
+
 func _is_walkable_cell(cell: Vector2i) -> bool:
 	return _is_inside_map(cell) and not _is_wall(cell)
 
@@ -382,6 +553,7 @@ func _update_hud() -> void:
 func _draw() -> void:
 	_draw_player_hp_hearts()
 	_draw_map()
+	_draw_detection_ranges()
 	_draw_units()
 
 func _draw_player_hp_hearts() -> void:
@@ -438,6 +610,8 @@ func _draw_units() -> void:
 	for enemy in enemies:
 		if enemy["alive"] or float(enemy["death_timer"]) > 0.0:
 			var enemy_color := _enemy_color(enemy["ai"])
+			if int(enemy["state"]) == EnemyState.COMBAT:
+				enemy_color = Color(0.90, 0.24, 0.18)
 			var alpha := 1.0
 			var unit_scale := 1.0
 			if float(enemy["hit_timer"]) > 0.0:
@@ -447,9 +621,27 @@ func _draw_units() -> void:
 				unit_scale = maxf(0.15, alpha)
 
 			var facing: Vector2i = enemy["facing"]
-			_draw_unit(enemy["pos"], enemy_color, Color(1.0, 0.92, 0.72), facing, _enemy_bump_offset(), alpha, unit_scale, false)
+			_draw_unit(enemy["pos"], enemy_color, Color(1.0, 0.92, 0.72), facing, _enemy_bump_offset(enemy), alpha, unit_scale, false)
 			if enemy["alive"]:
 				_draw_enemy_hp(enemy)
+				_draw_enemy_state_label(enemy)
+
+func _draw_detection_ranges() -> void:
+	if not show_detection_ranges:
+		return
+
+	for enemy in enemies:
+		if not enemy["alive"]:
+			continue
+		var range_color := Color(0.22, 0.55, 1.0, 0.24)
+		var border_color := Color(0.30, 0.70, 1.0, 0.55)
+		if int(enemy["state"]) == EnemyState.COMBAT:
+			range_color = Color(1.0, 0.30, 0.16, 0.24)
+			border_color = Color(1.0, 0.44, 0.20, 0.58)
+		for cell in _visible_detection_cells(enemy):
+			var rect := _cell_rect(cell).grow(-6)
+			draw_rect(rect, range_color)
+			draw_rect(rect, border_color, false, 2.0)
 
 func _draw_unit(cell: Vector2i, body_color: Color, eye_color: Color, facing: Vector2i, offset: Vector2, alpha: float, unit_scale: float, is_player_unit: bool) -> void:
 	var base_rect := _cell_rect(cell).grow(-7)
@@ -557,17 +749,36 @@ func _draw_px(rect: Rect2, x: int, y: int, width: int, height: int, color: Color
 func _draw_enemy_hp(enemy: Dictionary) -> void:
 	var hp := int(enemy["hp"])
 	var max_hp := int(enemy["max_hp"])
-	var start := _cell_rect(enemy["pos"]).position + Vector2(8, -9)
+	var start := _cell_rect(enemy["pos"]).position + Vector2(8, -9) + _enemy_bump_offset(enemy)
 	for index in range(max_hp):
 		var pip_rect := Rect2(start + Vector2(index * 10, 0), Vector2(7, 5))
 		var pip_color := Color(0.88, 0.16, 0.18) if index < hp else Color(0.20, 0.05, 0.06)
 		draw_rect(pip_rect, pip_color)
 
+func _draw_enemy_state_label(enemy: Dictionary) -> void:
+	var text := _enemy_state_name(enemy)
+	var font := ThemeDB.fallback_font
+	var font_size := 10
+	var offset := _enemy_bump_offset(enemy)
+	var top_left := _cell_rect(enemy["pos"]).position + Vector2(4, -25) + offset
+	var text_width := float(text.length() * 7)
+	var tag_rect := Rect2(top_left, Vector2(maxf(34.0, text_width + 8.0), 13))
+	var fill_color := Color(0.04, 0.08, 0.12, 0.82)
+	var text_color := Color(0.70, 0.90, 1.0)
+	if int(enemy["state"]) == EnemyState.COMBAT:
+		fill_color = Color(0.24, 0.05, 0.04, 0.86)
+		text_color = Color(1.0, 0.76, 0.54)
+	draw_rect(tag_rect, fill_color)
+	draw_rect(tag_rect, Color(0.02, 0.02, 0.02, 0.85), false, 1.0)
+	draw_string(font, top_left + Vector2(4, 10), text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size, text_color)
+
 func _player_bump_offset() -> Vector2:
 	return _bump_offset(player_bump_timer, player_bump_dir)
 
-func _enemy_bump_offset() -> Vector2:
-	return Vector2.ZERO
+func _enemy_bump_offset(enemy: Dictionary) -> Vector2:
+	var timer := float(enemy["bump_timer"])
+	var direction: Vector2i = enemy["bump_dir"]
+	return _bump_offset(timer, direction)
 
 func _bump_offset(timer: float, direction: Vector2i) -> Vector2:
 	if timer <= 0.0 or direction == DIR_NONE:
@@ -586,6 +797,11 @@ func _enemy_color(ai_type: int) -> Color:
 		AIType.IDLE:
 			return Color(0.20, 0.42, 0.92)
 	return Color.WHITE
+
+func _enemy_state_name(enemy: Dictionary) -> String:
+	if int(enemy["state"]) == EnemyState.COMBAT:
+		return "COMBAT"
+	return "IDLE"
 
 func _ai_name(ai_type: int) -> String:
 	match ai_type:
