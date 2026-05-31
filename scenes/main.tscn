@@ -26,9 +26,9 @@ offset_left = 430.0
 offset_top = 58.0
 offset_right = 980.0
 offset_bottom = 178.0
-text = "WASD: move    R: reset    1/2: switch map
+text = "WASD: move    R: reset
 Units face their latest attempted move
-Collision: both units take 1 damage
-Back collision: victim takes +1 damage
-Boss: 2x2 body, charge warning, stun after attack
-AI: blue idle, yellow random, red chase, purple flee"
+Front hit: player and enemy both take damage
+Side/back hit: enemy takes 1/2 damage
+Monster-to-monster collision deals no damage
+AI: blue idle blockers"
