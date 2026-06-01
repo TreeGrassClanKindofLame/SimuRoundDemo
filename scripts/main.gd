@@ -221,7 +221,6 @@ func _create_enemy(pos: Vector2i, ai_type: int) -> Dictionary:
 		"max_hp": 2,
 		"alive": true,
 		"state": EnemyState.IDLE,
-		"just_alerted": false,
 		"bump_timer": 0.0,
 		"bump_dir": DIR_NONE,
 		"hit_timer": 0.0,
@@ -233,49 +232,373 @@ func _play_turn(player_delta: Vector2i) -> void:
 		return
 
 	turn_collision_pairs.clear()
-	_try_move_player(player_delta)
+	var snapshot := _create_turn_snapshot()
+	var intents := _collect_turn_intents(player_delta, snapshot)
+	_apply_intent_facings(intents)
+	var turn_event := _resolve_turn_intents(intents, snapshot)
+	var alert_event := ""
 	if player_alive:
-		_update_enemy_alerts()
-	if player_alive:
-		_take_enemy_turns()
+		alert_event = _update_enemy_alerts()
+	if player_alive and alert_event != "" and (turn_event == "" or turn_event == "Player moves"):
+		last_event = alert_event
+	elif player_alive and turn_event != "":
+		last_event = turn_event
 	turn_count += 1
 	_update_hud()
 	queue_redraw()
 
-func _try_move_player(delta: Vector2i) -> void:
-	_face_player(delta)
+func _create_turn_snapshot() -> Dictionary:
+	var occupants := {}
+	var enemy_indices_by_id := {}
+	occupants[_cell_key(player_pos)] = "player"
 
-	var target: Vector2i = player_pos + delta
-	if not _is_walkable_cell(target):
-		_start_player_bump(delta)
-		_play_sound("bump")
-		last_event = "Player bumps into a wall"
-		return
+	for index in range(enemies.size()):
+		var enemy: Dictionary = enemies[index]
+		if not enemy["alive"]:
+			continue
 
-	var enemy_index := _enemy_at(target)
-	if enemy_index != -1:
-		_start_player_bump(delta)
-		if _register_collision_pair("player", _enemy_unit_id(enemy_index)):
-			var enemy: Dictionary = enemies[enemy_index]
-			var enemy_pos: Vector2i = enemy["pos"]
-			var enemy_facing: Vector2i = enemy["facing"]
-			var collision_side := _collision_side(enemy_pos, enemy_facing, player_pos)
-			var enemy_damage := _enemy_collision_damage(collision_side)
-			var player_damage := _player_collision_damage(collision_side)
-			_damage_enemy(enemy_index, enemy_damage)
-			if player_damage > 0:
-				_damage_player(player_damage)
-			_play_sound("hit")
-			last_event = _player_enemy_collision_event_text(collision_side)
+		var enemy_id := str(enemy["id"])
+		occupants[_cell_key(enemy["pos"])] = enemy_id
+		enemy_indices_by_id[enemy_id] = index
+
+	return {
+		"player_pos": player_pos,
+		"occupants": occupants,
+		"enemy_indices_by_id": enemy_indices_by_id,
+	}
+
+func _collect_turn_intents(player_delta: Vector2i, snapshot: Dictionary) -> Array[Dictionary]:
+	var intents: Array[Dictionary] = []
+	intents.append(_make_turn_intent("player", -1, snapshot["player_pos"], player_delta))
+
+	for index in range(enemies.size()):
+		var enemy: Dictionary = enemies[index]
+		if not enemy["alive"] or int(enemy["state"]) != EnemyState.COMBAT:
+			continue
+
+		var delta := _decide_enemy_chase_action(index)
+		intents.append(_make_turn_intent(str(enemy["id"]), index, enemy["pos"], delta))
+
+	return intents
+
+func _make_turn_intent(unit_id: String, enemy_index: int, from: Vector2i, delta: Vector2i) -> Dictionary:
+	var target := from + delta
+	return {
+		"unit_id": unit_id,
+		"enemy_index": enemy_index,
+		"from": from,
+		"to": target,
+		"delta": delta,
+		"valid_target": delta == DIR_NONE or _is_walkable_cell(target),
+	}
+
+func _apply_intent_facings(intents: Array[Dictionary]) -> void:
+	for intent in intents:
+		var delta: Vector2i = intent["delta"]
+		if delta == DIR_NONE:
+			continue
+
+		if _is_player_intent(intent):
+			_face_player(delta)
 		else:
-			_play_sound("bump")
-			last_event = "Player and enemy already collided this turn"
+			_face_enemy(int(intent["enemy_index"]), delta)
+
+func _resolve_turn_intents(intents: Array[Dictionary], snapshot: Dictionary) -> String:
+	var blocked := {}
+	var intent_by_unit := {}
+	var target_claims := {}
+	var events: Array[String] = []
+	var moved_player := false
+	var moved_enemy := false
+
+	for intent in intents:
+		var unit_id := str(intent["unit_id"])
+		blocked[unit_id] = false
+		intent_by_unit[unit_id] = intent
+
+		var delta: Vector2i = intent["delta"]
+		if delta == DIR_NONE or not bool(intent["valid_target"]):
+			continue
+
+		var target_key := _cell_key(intent["to"])
+		if not target_claims.has(target_key):
+			target_claims[target_key] = []
+		target_claims[target_key].append(unit_id)
+
+	for intent in intents:
+		var unit_id := str(intent["unit_id"])
+		var delta: Vector2i = intent["delta"]
+		if delta == DIR_NONE:
+			continue
+
+		if not bool(intent["valid_target"]):
+			blocked[unit_id] = true
+			_add_bump_event(events, intent, "wall")
+
+	var occupants: Dictionary = snapshot["occupants"]
+	for target_key in target_claims.keys():
+		var claimants: Array = target_claims[target_key]
+		if claimants.size() < 2:
+			continue
+
+		if not _is_target_cell_available_for_claimants(target_key, claimants, occupants, intent_by_unit, blocked):
+			var occupant_id := ""
+			if occupants.has(target_key):
+				occupant_id = str(occupants[target_key])
+			for unit_id in claimants:
+				blocked[str(unit_id)] = true
+				var intent: Dictionary = intent_by_unit[str(unit_id)]
+				var collision_event := _resolve_occupied_cell_collision(intent, occupant_id, snapshot)
+				if collision_event != "":
+					_add_unique_event(events, collision_event)
+				else:
+					_add_bump_event(events, intent, "contest")
+			continue
+
+		var winner_id := _select_contested_cell_winner(claimants)
+		for unit_id in claimants:
+			if str(unit_id) == winner_id:
+				continue
+			blocked[str(unit_id)] = true
+			var intent: Dictionary = intent_by_unit[str(unit_id)]
+			_add_bump_event(events, intent, "contest")
+		_resolve_contested_cell_collisions(claimants, intent_by_unit, events)
+
+	for intent in intents:
+		var unit_id := str(intent["unit_id"])
+		var delta: Vector2i = intent["delta"]
+		if delta == DIR_NONE or not bool(intent["valid_target"]):
+			continue
+
+		var target_key := _cell_key(intent["to"])
+		if not occupants.has(target_key):
+			continue
+
+		var occupant_id := str(occupants[target_key])
+		if occupant_id == unit_id:
+			continue
+		if bool(blocked[unit_id]):
+			continue
+		if _can_enter_vacated_cell(intent, occupant_id, intent_by_unit, blocked):
+			continue
+
+		blocked[unit_id] = true
+		if intent_by_unit.has(occupant_id):
+			var occupant_intent: Dictionary = intent_by_unit[occupant_id]
+			if occupant_intent["delta"] != DIR_NONE:
+				blocked[occupant_id] = true
+				_add_bump_event(events, occupant_intent, "occupied")
+
+		var collision_event := _resolve_occupied_cell_collision(intent, occupant_id, snapshot)
+		if collision_event != "":
+			_add_unique_event(events, collision_event)
+		else:
+			_add_bump_event(events, intent, "occupied")
+
+	for intent in intents:
+		var unit_id := str(intent["unit_id"])
+		var delta: Vector2i = intent["delta"]
+		if delta == DIR_NONE:
+			continue
+
+		if bool(blocked[unit_id]):
+			_start_intent_bump(intent)
+			continue
+
+		if _is_player_intent(intent):
+			player_pos = intent["to"]
+			moved_player = true
+		else:
+			var enemy_index := int(intent["enemy_index"])
+			if enemy_index < 0 or enemy_index >= enemies.size() or not enemies[enemy_index]["alive"]:
+				continue
+			var enemy: Dictionary = enemies[enemy_index]
+			enemy["pos"] = intent["to"]
+			enemies[enemy_index] = enemy
+			moved_enemy = true
+
+	if player_alive and moved_player:
+		_add_unique_event(events, "Player moves")
+	if moved_enemy:
+		_add_unique_event(events, "Enemy chases player")
+
+	if not player_alive:
+		return last_event
+	return _select_turn_event(events)
+
+func _is_target_cell_available_for_claimants(target_key: String, claimants: Array, occupants: Dictionary, intent_by_unit: Dictionary, blocked: Dictionary) -> bool:
+	if not occupants.has(target_key):
+		return true
+
+	var occupant_id := str(occupants[target_key])
+	for unit_id in claimants:
+		var claimant_intent: Dictionary = intent_by_unit[str(unit_id)]
+		if not _can_enter_vacated_cell(claimant_intent, occupant_id, intent_by_unit, blocked):
+			return false
+	return true
+
+func _can_enter_vacated_cell(intent: Dictionary, occupant_id: String, intent_by_unit: Dictionary, blocked: Dictionary) -> bool:
+	if not intent_by_unit.has(occupant_id):
+		return false
+	if bool(blocked.get(occupant_id, false)):
+		return false
+
+	var occupant_intent: Dictionary = intent_by_unit[occupant_id]
+	var occupant_delta: Vector2i = occupant_intent["delta"]
+	if occupant_delta == DIR_NONE or not bool(occupant_intent["valid_target"]):
+		return false
+
+	var occupant_target: Vector2i = occupant_intent["to"]
+	var mover_start: Vector2i = intent["from"]
+	if occupant_target == mover_start:
+		return false
+	return true
+
+func _select_contested_cell_winner(claimants: Array) -> String:
+	for unit_id in claimants:
+		if str(unit_id) == "player":
+			return "player"
+	return str(claimants[rng.randi_range(0, claimants.size() - 1)])
+
+func _resolve_contested_cell_collisions(claimants: Array, intent_by_unit: Dictionary, events: Array[String]) -> void:
+	if not claimants.has("player"):
 		return
 
-	player_pos = target
-	last_event = "Player moves"
+	var hit_count := 0
+	for unit_id in claimants:
+		var enemy_id := str(unit_id)
+		if enemy_id == "player":
+			continue
+		if not _register_collision_pair("player", enemy_id):
+			continue
 
-func _update_enemy_alerts() -> void:
+		var enemy_intent: Dictionary = intent_by_unit[enemy_id]
+		var enemy_index := int(enemy_intent["enemy_index"])
+		if enemy_index < 0 or enemy_index >= enemies.size() or not enemies[enemy_index]["alive"]:
+			continue
+
+		_damage_enemy(enemy_index, DAMAGE_PER_COLLISION)
+		_damage_player(DAMAGE_PER_COLLISION)
+		hit_count += 1
+
+	if hit_count > 0:
+		_play_sound("hit")
+		_add_unique_event(events, _player_enemy_collision_event_text(CollisionSide.FRONT))
+
+func _resolve_occupied_cell_collision(intent: Dictionary, occupant_id: String, snapshot: Dictionary) -> String:
+	var unit_id := str(intent["unit_id"])
+	if unit_id != "player" and occupant_id != "player":
+		return ""
+
+	var enemy_indices_by_id: Dictionary = snapshot["enemy_indices_by_id"]
+	if unit_id == "player":
+		if not enemy_indices_by_id.has(occupant_id):
+			return ""
+		if not _register_collision_pair("player", occupant_id):
+			return "Player and enemy already collided this turn"
+
+		var enemy_index := int(enemy_indices_by_id[occupant_id])
+		if enemy_index < 0 or enemy_index >= enemies.size() or not enemies[enemy_index]["alive"]:
+			return ""
+
+		var enemy: Dictionary = enemies[enemy_index]
+		var enemy_pos: Vector2i = enemy["pos"]
+		var enemy_facing: Vector2i = enemy["facing"]
+		var attacker_pos: Vector2i = intent["from"]
+		var collision_side := _collision_side(enemy_pos, enemy_facing, attacker_pos)
+		var enemy_damage := _enemy_collision_damage(collision_side)
+		var player_damage := _player_collision_damage(collision_side)
+		_damage_enemy(enemy_index, enemy_damage)
+		if player_damage > 0:
+			_damage_player(player_damage)
+		_play_sound("hit")
+		return _player_enemy_collision_event_text(collision_side)
+
+	if occupant_id != "player":
+		return ""
+	if not _register_collision_pair("player", unit_id):
+		return "Player and enemy already collided this turn"
+
+	var attacker_enemy_index := int(intent["enemy_index"])
+	if attacker_enemy_index < 0 or attacker_enemy_index >= enemies.size() or not enemies[attacker_enemy_index]["alive"]:
+		return ""
+
+	var enemy_attacker_pos: Vector2i = intent["from"]
+	var player_side := _collision_side(player_pos, player_facing, enemy_attacker_pos)
+	var damage_to_player := _enemy_collision_damage(player_side)
+	var damage_to_enemy := _player_collision_damage(player_side)
+	if damage_to_enemy > 0:
+		_damage_enemy(attacker_enemy_index, damage_to_enemy)
+	if damage_to_player > 0:
+		_damage_player(damage_to_player)
+	_play_sound("hit")
+	return _enemy_player_collision_event_text(player_side)
+
+func _add_bump_event(events: Array[String], intent: Dictionary, reason: String) -> void:
+	if _is_player_intent(intent):
+		if reason == "wall":
+			_add_unique_event(events, "Player bumps into a wall")
+		elif reason == "occupied":
+			_add_unique_event(events, "Player bumps into an occupied cell")
+		else:
+			_add_unique_event(events, "Player cannot enter a contested cell")
+		return
+
+	if reason == "wall":
+		_add_unique_event(events, "Enemy bumps into wall")
+	elif reason == "occupied":
+		var target: Vector2i = intent["to"]
+		if target == player_pos:
+			_add_unique_event(events, "Enemy bumps into player")
+		else:
+			_add_unique_event(events, "Enemy bumps into enemy")
+	else:
+		_add_unique_event(events, "Enemies contest the same cell")
+
+func _start_intent_bump(intent: Dictionary) -> void:
+	var delta: Vector2i = intent["delta"]
+	if delta == DIR_NONE:
+		return
+
+	if _is_player_intent(intent):
+		_start_player_bump(delta)
+	else:
+		_start_enemy_bump(int(intent["enemy_index"]), delta)
+	_play_sound("bump")
+
+func _is_player_intent(intent: Dictionary) -> bool:
+	return str(intent["unit_id"]) == "player"
+
+func _add_unique_event(events: Array[String], event_text: String) -> void:
+	if event_text == "":
+		return
+	if not events.has(event_text):
+		events.append(event_text)
+
+func _select_turn_event(events: Array[String]) -> String:
+	for event_text in events:
+		if event_text.begins_with("Front collision") or event_text.begins_with("Back collision") or event_text.begins_with("Side collision"):
+			return event_text
+	for event_text in events:
+		if event_text == "Player and enemy already collided this turn":
+			return event_text
+	for event_text in events:
+		if event_text.begins_with("Player bumps") or event_text.begins_with("Player cannot"):
+			return event_text
+	for event_text in events:
+		if event_text.begins_with("Enemy") or event_text.begins_with("Enemies"):
+			return event_text
+	for event_text in events:
+		if event_text == "Player moves":
+			return event_text
+	if events.size() > 0:
+		return events[0]
+	return ""
+
+func _cell_key(cell: Vector2i) -> String:
+	return "%d,%d" % [cell.x, cell.y]
+
+func _update_enemy_alerts() -> String:
 	var alerted_count := 0
 	for index in range(enemies.size()):
 		var enemy: Dictionary = enemies[index]
@@ -283,30 +606,14 @@ func _update_enemy_alerts() -> void:
 			continue
 		if _enemy_can_detect_player(enemy):
 			enemy["state"] = EnemyState.COMBAT
-			enemy["just_alerted"] = true
 			enemies[index] = enemy
 			alerted_count += 1
 
 	if alerted_count == 1:
-		last_event = "An enemy spotted the player"
+		return "An enemy spotted the player"
 	elif alerted_count > 1:
-		last_event = "%d enemies spotted the player" % alerted_count
-
-func _take_enemy_turns() -> void:
-	for index in range(enemies.size()):
-		if not player_alive:
-			return
-		if not enemies[index]["alive"] or int(enemies[index]["state"]) != EnemyState.COMBAT:
-			continue
-
-		var enemy: Dictionary = enemies[index]
-		if bool(enemy["just_alerted"]):
-			enemy["just_alerted"] = false
-			enemies[index] = enemy
-			continue
-
-		var delta := _decide_enemy_chase_action(index)
-		_try_move_enemy(index, delta)
+		return "%d enemies spotted the player" % alerted_count
+	return ""
 
 func _decide_enemy_chase_action(index: int) -> Vector2i:
 	_setup_chase_astar(index)
@@ -315,34 +622,6 @@ func _decide_enemy_chase_action(index: int) -> Vector2i:
 	if path.size() < 2:
 		return DIR_NONE
 	return path[1] - enemy_pos
-
-func _try_move_enemy(index: int, delta: Vector2i) -> void:
-	if delta == DIR_NONE:
-		return
-
-	_face_enemy(index, delta)
-	var enemy: Dictionary = enemies[index]
-	var target: Vector2i = enemy["pos"] + delta
-	if not _is_walkable_cell(target):
-		_start_enemy_bump(index, delta)
-		_play_sound("bump")
-		return
-
-	if target == player_pos:
-		_start_enemy_bump(index, delta)
-		_play_sound("bump")
-		last_event = "Enemy bumps into player"
-		return
-
-	if _enemy_at(target) != -1:
-		_start_enemy_bump(index, delta)
-		_play_sound("bump")
-		last_event = "Enemy bumps into enemy"
-		return
-
-	enemy["pos"] = target
-	enemies[index] = enemy
-	last_event = "Enemy chases player"
 
 func _damage_player(amount: int) -> void:
 	if not player_alive:
@@ -395,17 +674,6 @@ func _start_enemy_bump(index: int, direction: Vector2i) -> void:
 	enemy["bump_timer"] = BUMP_DURATION
 	enemies[index] = enemy
 
-func _enemy_at(cell: Vector2i) -> int:
-	for index in range(enemies.size()):
-		if enemies[index]["alive"] and enemies[index]["pos"] == cell:
-			return index
-	return -1
-
-func _enemy_unit_id(index: int) -> String:
-	if index < 0 or index >= enemies.size():
-		return "missing"
-	return str(enemies[index]["id"])
-
 func _register_collision_pair(unit_a: String, unit_b: String) -> bool:
 	var pair := [unit_a, unit_b]
 	pair.sort()
@@ -440,6 +708,14 @@ func _player_enemy_collision_event_text(collision_side: int) -> String:
 		CollisionSide.BACK:
 			return "Back collision: enemy takes heavy damage"
 	return "Side collision: enemy takes damage"
+
+func _enemy_player_collision_event_text(collision_side: int) -> String:
+	match collision_side:
+		CollisionSide.FRONT:
+			return "Front collision: player and enemy both take damage"
+		CollisionSide.BACK:
+			return "Back collision: player takes heavy damage"
+	return "Side collision: player takes damage"
 
 func _setup_chase_astar(current_enemy_index: int) -> void:
 	astar_grid.region = Rect2i(Vector2i.ZERO, Vector2i(_map_width(), _map_height()))
@@ -610,8 +886,6 @@ func _draw_units() -> void:
 	for enemy in enemies:
 		if enemy["alive"] or float(enemy["death_timer"]) > 0.0:
 			var enemy_color := _enemy_color(enemy["ai"])
-			if int(enemy["state"]) == EnemyState.COMBAT:
-				enemy_color = Color(0.90, 0.24, 0.18)
 			var alpha := 1.0
 			var unit_scale := 1.0
 			if float(enemy["hit_timer"]) > 0.0:
@@ -635,9 +909,6 @@ func _draw_detection_ranges() -> void:
 			continue
 		var range_color := Color(0.22, 0.55, 1.0, 0.24)
 		var border_color := Color(0.30, 0.70, 1.0, 0.55)
-		if int(enemy["state"]) == EnemyState.COMBAT:
-			range_color = Color(1.0, 0.30, 0.16, 0.24)
-			border_color = Color(1.0, 0.44, 0.20, 0.58)
 		for cell in _visible_detection_cells(enemy):
 			var rect := _cell_rect(cell).grow(-6)
 			draw_rect(rect, range_color)
@@ -763,14 +1034,9 @@ func _draw_enemy_state_label(enemy: Dictionary) -> void:
 	var top_left := _cell_rect(enemy["pos"]).position + Vector2(4, -25) + offset
 	var text_width := float(text.length() * 7)
 	var tag_rect := Rect2(top_left, Vector2(maxf(34.0, text_width + 8.0), 13))
-	var fill_color := Color(0.04, 0.08, 0.12, 0.82)
-	var text_color := Color(0.70, 0.90, 1.0)
-	if int(enemy["state"]) == EnemyState.COMBAT:
-		fill_color = Color(0.24, 0.05, 0.04, 0.86)
-		text_color = Color(1.0, 0.76, 0.54)
-	draw_rect(tag_rect, fill_color)
+	draw_rect(tag_rect, Color(0.04, 0.08, 0.12, 0.82))
 	draw_rect(tag_rect, Color(0.02, 0.02, 0.02, 0.85), false, 1.0)
-	draw_string(font, top_left + Vector2(4, 10), text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size, text_color)
+	draw_string(font, top_left + Vector2(4, 10), text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size, Color(0.70, 0.90, 1.0))
 
 func _player_bump_offset() -> Vector2:
 	return _bump_offset(player_bump_timer, player_bump_dir)
