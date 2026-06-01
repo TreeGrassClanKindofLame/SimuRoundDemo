@@ -29,3 +29,13 @@ Godot 4 simultaneous-turn grid game demo.
 ## Run
 
 Open the folder in Godot and run the project. The default scene is `res://scenes/main.tscn`.
+
+## Tests
+
+Run the turn-resolution regression tests with Godot headless:
+
+```powershell
+& "D:\claude code\Godot_v4.6.3-stable_win64.exe" --headless --path "D:\claude code\SimuRoundDemo" --script "res://tests/turn_resolution_tests.gd"
+```
+
+The suite includes deterministic collision scenarios and randomized invariant checks for simultaneous movement resolution.
