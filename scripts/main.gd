@@ -623,57 +623,89 @@ func _update_player_fog() -> void:
 
 func _player_visible_cells() -> Dictionary:
 	var visible_cells := {}
+	var visible_floor_cells: Array[Vector2i] = []
 	for y in range(_map_height()):
 		for x in range(_map_width()):
 			var cell := Vector2i(x, y)
 			if _is_cell_in_player_vision(cell):
 				visible_cells[_cell_key(cell)] = true
+				if not _is_wall(cell):
+					visible_floor_cells.append(cell)
 
+	_add_walls_adjacent_to_visible_floors(visible_cells, visible_floor_cells)
 	return visible_cells
+
+func _add_walls_adjacent_to_visible_floors(visible_cells: Dictionary, visible_floor_cells: Array[Vector2i]) -> void:
+	for floor_cell in visible_floor_cells:
+		for direction in [DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]:
+			var wall_cell: Vector2i = floor_cell + direction
+			if not _is_inside_map(wall_cell):
+				continue
+			if not _is_wall(wall_cell):
+				continue
+			if _manhattan_distance(player_pos, wall_cell) > PLAYER_VISION_RANGE:
+				continue
+			visible_cells[_cell_key(wall_cell)] = true
 
 func _is_cell_in_player_vision(cell: Vector2i) -> bool:
 	if not _is_inside_map(cell):
 		return false
 	if _manhattan_distance(player_pos, cell) > PLAYER_VISION_RANGE:
 		return false
-	return _has_unblocked_shortest_vision_path(player_pos, cell)
+	return _has_player_line_of_sight(player_pos, cell)
 
-func _has_unblocked_shortest_vision_path(from: Vector2i, to: Vector2i) -> bool:
+func _has_player_line_of_sight(from: Vector2i, to: Vector2i) -> bool:
 	if from == to:
 		return true
 
-	var queue: Array[Vector2i] = [from]
-	var visited := {}
-	visited[_cell_key(from)] = true
+	var delta: Vector2i = to - from
+	var x_steps: int = int(abs(delta.x))
+	var y_steps: int = int(abs(delta.y))
+	var step_x: int = 0
+	var step_y: int = 0
+	if delta.x > 0:
+		step_x = 1
+	elif delta.x < 0:
+		step_x = -1
+	if delta.y > 0:
+		step_y = 1
+	elif delta.y < 0:
+		step_y = -1
 
-	while queue.size() > 0:
-		var cell: Vector2i = queue.pop_front()
-		var current_distance := _manhattan_distance(cell, to)
-		for neighbor in _cardinal_neighbors(cell):
-			if not _is_inside_map(neighbor):
-				continue
-			if _manhattan_distance(neighbor, to) >= current_distance:
-				continue
-			if neighbor != to and _is_wall(neighbor):
-				continue
-			if neighbor == to:
-				return true
+	var current: Vector2i = from
+	var x_progress: int = 0
+	var y_progress: int = 0
+	while x_progress < x_steps or y_progress < y_steps:
+		var decision: int = (1 + 2 * x_progress) * y_steps - (1 + 2 * y_progress) * x_steps
+		if decision == 0:
+			var side_x := current + Vector2i(step_x, 0)
+			var side_y := current + Vector2i(0, step_y)
+			if _is_closed_vision_corner(side_x, side_y):
+				return false
+			current += Vector2i(step_x, step_y)
+			x_progress += 1
+			y_progress += 1
+		elif decision < 0:
+			current += Vector2i(step_x, 0)
+			x_progress += 1
+		else:
+			current += Vector2i(0, step_y)
+			y_progress += 1
 
-			var neighbor_key := _cell_key(neighbor)
-			if visited.has(neighbor_key):
-				continue
-			visited[neighbor_key] = true
-			queue.append(neighbor)
+		if not _is_inside_map(current):
+			return false
+		if current == to:
+			return true
+		if _is_wall(current):
+			return false
 
 	return false
 
-func _cardinal_neighbors(cell: Vector2i) -> Array[Vector2i]:
-	return [
-		cell + DIR_UP,
-		cell + DIR_DOWN,
-		cell + DIR_LEFT,
-		cell + DIR_RIGHT,
-	]
+func _is_closed_vision_corner(side_a: Vector2i, side_b: Vector2i) -> bool:
+	return _is_player_vision_blocker(side_a) and _is_player_vision_blocker(side_b)
+
+func _is_player_vision_blocker(cell: Vector2i) -> bool:
+	return not _is_inside_map(cell) or _is_wall(cell)
 
 func _manhattan_distance(a: Vector2i, b: Vector2i) -> int:
 	return abs(a.x - b.x) + abs(a.y - b.y)

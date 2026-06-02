@@ -27,10 +27,15 @@ func _run() -> void:
 	_test_multiple_enemies_contest_player_vacated_cell()
 	_test_player_back_hit_kills_enemy()
 	_test_newly_alerted_enemy_chases_on_next_action()
-	_test_initial_fog_reveals_path_limited_vision()
-	_test_fog_blocks_cells_behind_shortest_path_wall()
+	_test_initial_fog_reveals_line_of_sight_limited_vision()
+	_test_fog_blocks_cells_behind_line_of_sight_wall()
+	_test_fog_blocks_diagonal_corner_line_of_sight()
+	_test_fog_allows_open_diagonal_corner_line_of_sight()
+	_test_fog_blocks_closed_diagonal_corner_line_of_sight()
+	_test_fog_reveals_walls_next_to_visible_floors()
 	_test_fog_clear_cells_become_thin_after_player_moves()
 	_test_fog_hides_enemies_outside_clear_cells()
+	_test_fog_hides_closed_corner_blocked_enemies()
 	_test_random_resolution_invariants()
 
 	if failures.size() > 0:
@@ -251,7 +256,7 @@ func _test_newly_alerted_enemy_chases_on_next_action() -> void:
 	_expect_true("alert: enemy moves on next action", main.enemies[0]["pos"] != position_after_alert)
 	_free_main(main)
 
-func _test_initial_fog_reveals_path_limited_vision() -> void:
+func _test_initial_fog_reveals_line_of_sight_limited_vision() -> void:
 	var main := _new_main()
 
 	_expect_eq("initial fog: player cell clear", main._fog_state(Vector2i(1, 1)), FOG_CLEAR)
@@ -260,12 +265,42 @@ func _test_initial_fog_reveals_path_limited_vision() -> void:
 	_expect_eq("initial fog: first wall visible", main._fog_state(Vector2i(3, 2)), FOG_CLEAR)
 	_free_main(main)
 
-func _test_fog_blocks_cells_behind_shortest_path_wall() -> void:
+func _test_fog_blocks_cells_behind_line_of_sight_wall() -> void:
 	var main := _new_main()
 	_set_units(main, Vector2i(3, 1), DIR_DOWN, [])
 
-	_expect_eq("fog blocked shortest path: blocking wall visible", main._fog_state(Vector2i(3, 2)), FOG_CLEAR)
-	_expect_eq("fog blocked shortest path: cell behind wall dense", main._fog_state(Vector2i(3, 4)), FOG_DENSE)
+	_expect_eq("fog blocked line of sight: blocking wall visible", main._fog_state(Vector2i(3, 2)), FOG_CLEAR)
+	_expect_eq("fog blocked line of sight: cell behind wall dense", main._fog_state(Vector2i(3, 4)), FOG_DENSE)
+	_free_main(main)
+
+func _test_fog_blocks_diagonal_corner_line_of_sight() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(1, 1), DIR_RIGHT, [])
+
+	_expect_eq("fog corner line of sight: grazing wall visible", main._fog_state(Vector2i(3, 2)), FOG_CLEAR)
+	_expect_eq("fog corner line of sight: corner-blocked floor dense", main._fog_state(Vector2i(4, 3)), FOG_DENSE)
+	_free_main(main)
+
+func _test_fog_allows_open_diagonal_corner_line_of_sight() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(1, 1), DIR_RIGHT, [])
+
+	_expect_eq("fog open diagonal corner: floor beside single wall clear", main._fog_state(Vector2i(3, 3)), FOG_CLEAR)
+	_free_main(main)
+
+func _test_fog_blocks_closed_diagonal_corner_line_of_sight() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(4, 4), DIR_RIGHT, [])
+
+	_expect_eq("fog closed diagonal corner: floor behind paired walls dense", main._fog_state(Vector2i(6, 2)), FOG_DENSE)
+	_free_main(main)
+
+func _test_fog_reveals_walls_next_to_visible_floors() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(1, 1), DIR_RIGHT, [])
+
+	_expect_eq("fog adjacent wall reveal: wall beside visible floor clear", main._fog_state(Vector2i(4, 2)), FOG_CLEAR)
+	_expect_eq("fog adjacent wall reveal: out-of-range wall remains dense", main._fog_state(Vector2i(6, 0)), FOG_DENSE)
 	_free_main(main)
 
 func _test_fog_clear_cells_become_thin_after_player_moves() -> void:
@@ -287,6 +322,15 @@ func _test_fog_hides_enemies_outside_clear_cells() -> void:
 
 	_expect_true("fog hidden enemies: near enemy visible", main._should_draw_enemy(main.enemies[0]))
 	_expect_true("fog hidden enemies: far enemy hidden", not main._should_draw_enemy(main.enemies[1]))
+	_free_main(main)
+
+func _test_fog_hides_closed_corner_blocked_enemies() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(4, 4), DIR_RIGHT, [
+		_make_enemy(main, "corner_blocked_enemy", Vector2i(6, 2), DIR_LEFT, STATE_IDLE),
+	])
+
+	_expect_true("fog hidden enemies: closed-corner enemy hidden", not main._should_draw_enemy(main.enemies[0]))
 	_free_main(main)
 
 func _test_random_resolution_invariants() -> void:
