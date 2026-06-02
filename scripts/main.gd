@@ -3,6 +3,7 @@ extends Node2D
 enum AIType { IDLE }
 enum CollisionSide { FRONT, SIDE, BACK }
 enum EnemyState { IDLE, COMBAT }
+enum FogState { DENSE, THIN, CLEAR }
 
 const TILE_SIZE := 48
 const MAP_ORIGIN := Vector2(48, 192)
@@ -19,6 +20,7 @@ const MAP_ROWS := [
 ]
 const PLAYER_START := Vector2i(1, 1)
 const PLAYER_MAX_HP := 5
+const PLAYER_VISION_RANGE := 5
 const DAMAGE_PER_COLLISION := 1
 const BACK_COLLISION_BONUS_DAMAGE := 1
 const BUMP_DURATION := 0.16
@@ -61,6 +63,7 @@ var rng := RandomNumberGenerator.new()
 var astar_grid := AStarGrid2D.new()
 var sound_players: Dictionary = {}
 var turn_collision_pairs: Dictionary = {}
+var fog_by_cell: Dictionary = {}
 
 @onready var status_label: Label = $HUD/Status
 
@@ -206,6 +209,8 @@ func _reset_demo(play_reset_sound := false) -> void:
 		_create_enemy(Vector2i(3, 7), AIType.IDLE),
 		_create_enemy(Vector2i(12, 7), AIType.IDLE),
 	]
+	_reset_fog()
+	_update_player_fog()
 	if play_reset_sound:
 		_play_sound("reset")
 	_update_hud()
@@ -238,6 +243,7 @@ func _play_turn(player_delta: Vector2i) -> void:
 	var turn_event := _resolve_turn_intents(intents, snapshot)
 	var alert_event := ""
 	if player_alive:
+		_update_player_fog()
 		alert_event = _update_enemy_alerts()
 	if player_alive and alert_event != "" and (turn_event == "" or turn_event == "Player moves"):
 		last_event = alert_event
@@ -598,6 +604,90 @@ func _select_turn_event(events: Array[String]) -> String:
 func _cell_key(cell: Vector2i) -> String:
 	return "%d,%d" % [cell.x, cell.y]
 
+func _reset_fog() -> void:
+	fog_by_cell.clear()
+	for y in range(_map_height()):
+		for x in range(_map_width()):
+			fog_by_cell[_cell_key(Vector2i(x, y))] = FogState.DENSE
+
+func _update_player_fog() -> void:
+	if not player_alive:
+		return
+
+	var visible_cells := _player_visible_cells()
+	for key in fog_by_cell.keys():
+		if visible_cells.has(key):
+			fog_by_cell[key] = FogState.CLEAR
+		elif int(fog_by_cell[key]) == FogState.CLEAR:
+			fog_by_cell[key] = FogState.THIN
+
+func _player_visible_cells() -> Dictionary:
+	var visible_cells := {}
+	for y in range(_map_height()):
+		for x in range(_map_width()):
+			var cell := Vector2i(x, y)
+			if _is_cell_in_player_vision(cell):
+				visible_cells[_cell_key(cell)] = true
+
+	return visible_cells
+
+func _is_cell_in_player_vision(cell: Vector2i) -> bool:
+	if not _is_inside_map(cell):
+		return false
+	if _manhattan_distance(player_pos, cell) > PLAYER_VISION_RANGE:
+		return false
+	return _has_unblocked_shortest_vision_path(player_pos, cell)
+
+func _has_unblocked_shortest_vision_path(from: Vector2i, to: Vector2i) -> bool:
+	if from == to:
+		return true
+
+	var queue: Array[Vector2i] = [from]
+	var visited := {}
+	visited[_cell_key(from)] = true
+
+	while queue.size() > 0:
+		var cell: Vector2i = queue.pop_front()
+		var current_distance := _manhattan_distance(cell, to)
+		for neighbor in _cardinal_neighbors(cell):
+			if not _is_inside_map(neighbor):
+				continue
+			if _manhattan_distance(neighbor, to) >= current_distance:
+				continue
+			if neighbor != to and _is_wall(neighbor):
+				continue
+			if neighbor == to:
+				return true
+
+			var neighbor_key := _cell_key(neighbor)
+			if visited.has(neighbor_key):
+				continue
+			visited[neighbor_key] = true
+			queue.append(neighbor)
+
+	return false
+
+func _cardinal_neighbors(cell: Vector2i) -> Array[Vector2i]:
+	return [
+		cell + DIR_UP,
+		cell + DIR_DOWN,
+		cell + DIR_LEFT,
+		cell + DIR_RIGHT,
+	]
+
+func _manhattan_distance(a: Vector2i, b: Vector2i) -> int:
+	return abs(a.x - b.x) + abs(a.y - b.y)
+
+func _fog_state(cell: Vector2i) -> int:
+	return int(fog_by_cell.get(_cell_key(cell), FogState.DENSE))
+
+func _is_cell_clear(cell: Vector2i) -> bool:
+	return _fog_state(cell) == FogState.CLEAR
+
+func _should_draw_enemy(enemy: Dictionary) -> bool:
+	var enemy_pos: Vector2i = enemy["pos"]
+	return _is_cell_clear(enemy_pos)
+
 func _update_enemy_alerts() -> String:
 	var alerted_count := 0
 	for index in range(enemies.size()):
@@ -831,6 +921,7 @@ func _draw() -> void:
 	_draw_map()
 	_draw_detection_ranges()
 	_draw_units()
+	_draw_fog()
 
 func _draw_player_hp_hearts() -> void:
 	var heart_width := _heart_width(HEART_BLOCK)
@@ -885,6 +976,9 @@ func _draw_units() -> void:
 
 	for enemy in enemies:
 		if enemy["alive"] or float(enemy["death_timer"]) > 0.0:
+			if not _should_draw_enemy(enemy):
+				continue
+
 			var enemy_color := _enemy_color(enemy["ai"])
 			var alpha := 1.0
 			var unit_scale := 1.0
@@ -907,12 +1001,30 @@ func _draw_detection_ranges() -> void:
 	for enemy in enemies:
 		if not enemy["alive"]:
 			continue
+		if not _should_draw_enemy(enemy):
+			continue
 		var range_color := Color(0.22, 0.55, 1.0, 0.24)
 		var border_color := Color(0.30, 0.70, 1.0, 0.55)
 		for cell in _visible_detection_cells(enemy):
+			if not _is_cell_clear(cell):
+				continue
 			var rect := _cell_rect(cell).grow(-6)
 			draw_rect(rect, range_color)
 			draw_rect(rect, border_color, false, 2.0)
+
+func _draw_fog() -> void:
+	for y in range(_map_height()):
+		for x in range(_map_width()):
+			var cell := Vector2i(x, y)
+			var fog_state := _fog_state(cell)
+			if fog_state == FogState.CLEAR:
+				continue
+
+			var rect := _cell_rect(cell)
+			if fog_state == FogState.DENSE:
+				draw_rect(rect, Color(0.015, 0.018, 0.026, 1.0))
+			else:
+				draw_rect(rect, Color(0.05, 0.08, 0.10, 0.48))
 
 func _draw_unit(cell: Vector2i, body_color: Color, eye_color: Color, facing: Vector2i, offset: Vector2, alpha: float, unit_scale: float, is_player_unit: bool) -> void:
 	var base_rect := _cell_rect(cell).grow(-7)

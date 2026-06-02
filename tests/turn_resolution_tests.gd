@@ -8,6 +8,9 @@ const DIR_UP := Vector2i(0, -1)
 const DIR_DOWN := Vector2i(0, 1)
 const DIR_LEFT := Vector2i(-1, 0)
 const DIR_RIGHT := Vector2i(1, 0)
+const FOG_DENSE := 0
+const FOG_THIN := 1
+const FOG_CLEAR := 2
 
 var failures: Array[String] = []
 
@@ -24,6 +27,10 @@ func _run() -> void:
 	_test_multiple_enemies_contest_player_vacated_cell()
 	_test_player_back_hit_kills_enemy()
 	_test_newly_alerted_enemy_chases_on_next_action()
+	_test_initial_fog_reveals_path_limited_vision()
+	_test_fog_blocks_cells_behind_shortest_path_wall()
+	_test_fog_clear_cells_become_thin_after_player_moves()
+	_test_fog_hides_enemies_outside_clear_cells()
 	_test_random_resolution_invariants()
 
 	if failures.size() > 0:
@@ -82,6 +89,8 @@ func _set_units(main: Node, player_pos: Vector2i, player_facing: Vector2i, enemi
 	for enemy in enemies:
 		typed_enemies.append(enemy)
 	main.enemies = typed_enemies
+	main._reset_fog()
+	main._update_player_fog()
 
 func _resolve(main: Node, player_delta: Vector2i, enemy_deltas: Array[Vector2i]) -> void:
 	var snapshot: Dictionary = main._create_turn_snapshot()
@@ -240,6 +249,44 @@ func _test_newly_alerted_enemy_chases_on_next_action() -> void:
 
 	main._play_turn(DIR_DOWN)
 	_expect_true("alert: enemy moves on next action", main.enemies[0]["pos"] != position_after_alert)
+	_free_main(main)
+
+func _test_initial_fog_reveals_path_limited_vision() -> void:
+	var main := _new_main()
+
+	_expect_eq("initial fog: player cell clear", main._fog_state(Vector2i(1, 1)), FOG_CLEAR)
+	_expect_eq("initial fog: range edge clear", main._fog_state(Vector2i(6, 1)), FOG_CLEAR)
+	_expect_eq("initial fog: outside range dense", main._fog_state(Vector2i(7, 1)), FOG_DENSE)
+	_expect_eq("initial fog: first wall visible", main._fog_state(Vector2i(3, 2)), FOG_CLEAR)
+	_free_main(main)
+
+func _test_fog_blocks_cells_behind_shortest_path_wall() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(3, 1), DIR_DOWN, [])
+
+	_expect_eq("fog blocked shortest path: blocking wall visible", main._fog_state(Vector2i(3, 2)), FOG_CLEAR)
+	_expect_eq("fog blocked shortest path: cell behind wall dense", main._fog_state(Vector2i(3, 4)), FOG_DENSE)
+	_free_main(main)
+
+func _test_fog_clear_cells_become_thin_after_player_moves() -> void:
+	var main := _new_main()
+
+	_expect_eq("fog downgrade: old edge starts clear", main._fog_state(Vector2i(1, 6)), FOG_CLEAR)
+	main._play_turn(DIR_RIGHT)
+
+	_expect_eq("fog downgrade: old edge becomes thin", main._fog_state(Vector2i(1, 6)), FOG_THIN)
+	_expect_eq("fog downgrade: new edge becomes clear", main._fog_state(Vector2i(7, 1)), FOG_CLEAR)
+	_free_main(main)
+
+func _test_fog_hides_enemies_outside_clear_cells() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(1, 1), DIR_RIGHT, [
+		_make_enemy(main, "near_enemy", Vector2i(6, 1), DIR_LEFT, STATE_IDLE),
+		_make_enemy(main, "far_enemy", Vector2i(7, 1), DIR_LEFT, STATE_IDLE),
+	])
+
+	_expect_true("fog hidden enemies: near enemy visible", main._should_draw_enemy(main.enemies[0]))
+	_expect_true("fog hidden enemies: far enemy hidden", not main._should_draw_enemy(main.enemies[1]))
 	_free_main(main)
 
 func _test_random_resolution_invariants() -> void:
