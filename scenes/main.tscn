@@ -31,15 +31,15 @@ offset_bottom = 178.0
 text = "WASD: move    E then WASD: interact    1: wait    R: reset    V: toggle vision
 Press E or Esc to cancel direction selection"
 
-[node name="InteractionPrompt" type="Panel" parent="HUD"]
+[node name="InteractionPrompt" type="Panel" parent="HUD" unique_id=1790796330]
 visible = false
+modulate = Color(0.82, 0.08, 0.08, 1)
 offset_left = 610.0
 offset_top = 104.0
 offset_right = 940.0
 offset_bottom = 154.0
-modulate = Color(0.82, 0.08, 0.08, 1)
 
-[node name="Text" type="Label" parent="HUD/InteractionPrompt"]
+[node name="Text" type="Label" parent="HUD/InteractionPrompt" unique_id=1058970062]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0

@@ -1157,18 +1157,11 @@ func _draw_door(cell: Vector2i, door: Dictionary) -> void:
 			draw_rect(Rect2(rect.end - Vector2(rect.size.x - 4, 10), Vector2(rect.size.x - 8, 7)), frame_color)
 		return
 
-	if is_horizontal:
-		var panel := Rect2(rect.position + Vector2(8, 3), Vector2(rect.size.x - 16, rect.size.y - 6))
-		draw_rect(panel, shadow_color)
-		draw_rect(panel.grow(-3), door_color)
-		draw_rect(Rect2(panel.position + Vector2(6, 4), Vector2(4, panel.size.y - 8)), highlight_color)
-		draw_circle(panel.position + Vector2(panel.size.x - 7, panel.size.y * 0.5), 2.5, highlight_color)
-	else:
-		var panel := Rect2(rect.position + Vector2(3, 8), Vector2(rect.size.x - 6, rect.size.y - 16))
-		draw_rect(panel, shadow_color)
-		draw_rect(panel.grow(-3), door_color)
-		draw_rect(Rect2(panel.position + Vector2(4, 6), Vector2(panel.size.x - 8, 4)), highlight_color)
-		draw_circle(panel.position + Vector2(panel.size.x * 0.5, panel.size.y - 7), 2.5, highlight_color)
+	var panel := Rect2(rect.position + Vector2(8, 3), Vector2(rect.size.x - 16, rect.size.y - 6))
+	draw_rect(panel, shadow_color)
+	draw_rect(panel.grow(-3), door_color)
+	draw_rect(Rect2(panel.position + Vector2(6, 4), Vector2(4, panel.size.y - 8)), highlight_color)
+	draw_circle(panel.position + Vector2(panel.size.x - 7, panel.size.y * 0.5), 2.5, highlight_color)
 
 func _draw_units() -> void:
 	if player_alive or player_death_timer > 0.0:
