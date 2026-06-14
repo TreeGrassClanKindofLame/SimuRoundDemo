@@ -28,10 +28,26 @@ offset_left = 430.0
 offset_top = 58.0
 offset_right = 980.0
 offset_bottom = 178.0
-text = "WASD: move    R: reset    V: toggle vision
-Units face their latest attempted move
-Player and active enemies resolve together
-Front hit: player and enemy both take damage
-Side/back hit: target takes 1/2 damage
-IDLE enemies detect through a blocked cone
-COMBAT enemies chase on their next action"
+text = "WASD: move    E then WASD: interact    1: wait    R: reset    V: toggle vision
+Press E or Esc to cancel direction selection"
+
+[node name="InteractionPrompt" type="Panel" parent="HUD"]
+visible = false
+offset_left = 610.0
+offset_top = 104.0
+offset_right = 940.0
+offset_bottom = 154.0
+modulate = Color(0.82, 0.08, 0.08, 1)
+
+[node name="Text" type="Label" parent="HUD/InteractionPrompt"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 18
+text = "Choose interaction direction"
+horizontal_alignment = 1
+vertical_alignment = 1

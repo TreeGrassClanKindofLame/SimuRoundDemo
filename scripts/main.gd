@@ -4,15 +4,16 @@ enum AIType { IDLE }
 enum CollisionSide { FRONT, SIDE, BACK }
 enum EnemyState { IDLE, COMBAT }
 enum FogState { DENSE, THIN, CLEAR }
+enum DoorOrientation { HORIZONTAL, VERTICAL }
 
 const TILE_SIZE := 48
 const MAP_ORIGIN := Vector2(48, 192)
 const MAP_ROWS := [
 	"###############",
 	"#.............#",
-	"#..###........#",
+	"#..#H#........#",
 	"#.....#..##...#",
-	"#.....#.......#",
+	"#.....#..V....#",
 	"#..#.....#....#",
 	"#..#..###.....#",
 	"#.............#",
@@ -64,8 +65,11 @@ var astar_grid := AStarGrid2D.new()
 var sound_players: Dictionary = {}
 var turn_collision_pairs: Dictionary = {}
 var fog_by_cell: Dictionary = {}
+var doors: Dictionary = {}
+var choosing_interaction_direction := false
 
 @onready var status_label: Label = $HUD/Status
+@onready var interaction_prompt: Panel = $HUD/InteractionPrompt
 
 func _ready() -> void:
 	rng.randomize()
@@ -131,6 +135,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 
 func _try_play_key_action(keycode: Key) -> bool:
+	if choosing_interaction_direction:
+		return _try_interaction_direction_key(keycode)
+
 	match keycode:
 		KEY_1:
 			_play_turn(DIR_NONE)
@@ -142,6 +149,8 @@ func _try_play_key_action(keycode: Key) -> bool:
 			_play_turn(DIR_LEFT)
 		KEY_D:
 			_play_turn(DIR_RIGHT)
+		KEY_E:
+			_begin_interaction_selection()
 		KEY_R:
 			_reset_demo(true)
 		KEY_V:
@@ -153,11 +162,29 @@ func _try_play_key_action(keycode: Key) -> bool:
 			return false
 	return true
 
+func _try_interaction_direction_key(keycode: Key) -> bool:
+	match keycode:
+		KEY_W:
+			_play_interaction_turn(DIR_UP)
+		KEY_S:
+			_play_interaction_turn(DIR_DOWN)
+		KEY_A:
+			_play_interaction_turn(DIR_LEFT)
+		KEY_D:
+			_play_interaction_turn(DIR_RIGHT)
+		KEY_E, KEY_ESCAPE:
+			_cancel_interaction_selection()
+		_:
+			return false
+	return true
+
 func _setup_audio() -> void:
 	sound_players["bump"] = _create_sound_player(_make_tone(90.0, 60.0, 0.08, 0.35))
 	sound_players["hit"] = _create_sound_player(_make_tone(420.0, 260.0, 0.10, 0.32))
 	sound_players["death"] = _create_sound_player(_make_tone(180.0, 70.0, 0.22, 0.35))
 	sound_players["reset"] = _create_sound_player(_make_tone(260.0, 520.0, 0.16, 0.25))
+	sound_players["door_open"] = _create_sound_player(_make_tone(110.0, 260.0, 0.24, 0.30))
+	sound_players["door_close"] = _create_sound_player(_make_tone(190.0, 75.0, 0.15, 0.38))
 
 func _create_sound_player(stream: AudioStream) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
@@ -205,7 +232,9 @@ func _reset_demo(play_reset_sound := false) -> void:
 	reset_timer = 0.0
 	turn_count = 0
 	turn_collision_pairs.clear()
+	choosing_interaction_direction = false
 	last_event = "Ready"
+	_reset_doors()
 	enemies = [
 		_create_enemy(Vector2i(5, 1), AIType.IDLE),
 		_create_enemy(Vector2i(9, 1), AIType.IDLE),
@@ -239,7 +268,7 @@ func _create_enemy(pos: Vector2i, ai_type: int) -> Dictionary:
 		"death_timer": 0.0,
 	}
 
-func _play_turn(player_delta: Vector2i) -> void:
+func _play_turn(player_delta: Vector2i, player_action_event := "") -> void:
 	if not player_alive or reset_timer > 0.0:
 		return
 
@@ -252,13 +281,113 @@ func _play_turn(player_delta: Vector2i) -> void:
 	if player_alive:
 		_update_player_fog()
 		alert_event = _update_enemy_alerts()
-	if player_alive and alert_event != "" and (turn_event == "" or turn_event == "Player moves" or turn_event == "Player waits"):
+	if player_alive and player_action_event != "":
+		if _is_high_priority_turn_event(turn_event):
+			last_event = turn_event
+		elif alert_event != "":
+			last_event = alert_event
+		else:
+			last_event = player_action_event
+	elif player_alive and alert_event != "" and (turn_event == "" or turn_event == "Player moves" or turn_event == "Player waits"):
 		last_event = alert_event
 	elif player_alive and turn_event != "":
 		last_event = turn_event
 	turn_count += 1
 	_update_hud()
 	queue_redraw()
+
+func _begin_interaction_selection() -> void:
+	if not player_alive or reset_timer > 0.0:
+		return
+
+	choosing_interaction_direction = true
+	last_event = "Choose interaction direction (WASD)"
+	_update_hud()
+	queue_redraw()
+
+func _cancel_interaction_selection() -> void:
+	choosing_interaction_direction = false
+	last_event = "Interaction cancelled"
+	_update_hud()
+	queue_redraw()
+
+func _play_interaction_turn(direction: Vector2i) -> void:
+	if not player_alive or reset_timer > 0.0:
+		return
+
+	choosing_interaction_direction = false
+	var interaction_event := _interact_in_direction(direction)
+	_play_turn(DIR_NONE, interaction_event)
+
+func _interact_in_direction(direction: Vector2i) -> String:
+	var target := player_pos + direction
+	if not _is_door(target):
+		return "Nothing to interact with"
+
+	var door: Dictionary = doors[_cell_key(target)]
+	if bool(door["open"]):
+		if _is_cell_occupied_by_living_unit(target):
+			return "Door cannot close while occupied"
+		door["open"] = false
+		doors[_cell_key(target)] = door
+		_play_sound("door_close")
+		return "Door closes"
+
+	door["open"] = true
+	doors[_cell_key(target)] = door
+	_play_sound("door_open")
+	return "Door opens"
+
+func _is_high_priority_turn_event(event_text: String) -> bool:
+	return (
+		event_text.begins_with("Front collision")
+		or event_text.begins_with("Back collision")
+		or event_text.begins_with("Side collision")
+		or event_text == "Player and enemy already collided this turn"
+	)
+
+func _is_cell_occupied_by_living_unit(cell: Vector2i) -> bool:
+	if player_alive and player_pos == cell:
+		return true
+	for enemy in enemies:
+		if enemy["alive"] and enemy["pos"] == cell:
+			return true
+	return false
+
+func _reset_doors() -> void:
+	doors.clear()
+	for y in range(_map_height()):
+		for x in range(_map_width()):
+			var marker: String = MAP_ROWS[y].substr(x, 1)
+			if marker != "H" and marker != "V":
+				continue
+			var cell := Vector2i(x, y)
+			doors[_cell_key(cell)] = {
+				"pos": cell,
+				"orientation": DoorOrientation.HORIZONTAL if marker == "H" else DoorOrientation.VERTICAL,
+				"open": false,
+			}
+
+func _is_door(cell: Vector2i) -> bool:
+	return doors.has(_cell_key(cell))
+
+func _is_closed_door(cell: Vector2i) -> bool:
+	if not _is_door(cell):
+		return false
+	return not bool(doors[_cell_key(cell)]["open"])
+
+func _set_door_open(cell: Vector2i, is_open: bool) -> void:
+	if not _is_door(cell):
+		return
+	var door: Dictionary = doors[_cell_key(cell)]
+	door["open"] = is_open
+	doors[_cell_key(cell)] = door
+
+func _is_movement_blocker(cell: Vector2i) -> bool:
+	return _is_wall(cell) or _is_closed_door(cell)
+
+func _is_vision_blocker(cell: Vector2i) -> bool:
+	return not _is_inside_map(cell) or _is_movement_blocker(cell)
 
 func _create_turn_snapshot() -> Dictionary:
 	var occupants := {}
@@ -643,7 +772,7 @@ func _player_visible_cells() -> Dictionary:
 			var cell := Vector2i(x, y)
 			if _is_cell_in_player_vision(cell):
 				visible_cells[_cell_key(cell)] = true
-				if not _is_wall(cell):
+				if not _is_vision_blocker(cell):
 					visible_floor_cells.append(cell)
 
 	_add_walls_adjacent_to_visible_floors(visible_cells, visible_floor_cells)
@@ -710,7 +839,7 @@ func _has_player_line_of_sight(from: Vector2i, to: Vector2i) -> bool:
 			return false
 		if current == to:
 			return true
-		if _is_wall(current):
+		if _is_vision_blocker(current):
 			return false
 
 	return false
@@ -719,7 +848,7 @@ func _is_closed_vision_corner(side_a: Vector2i, side_b: Vector2i) -> bool:
 	return _is_player_vision_blocker(side_a) and _is_player_vision_blocker(side_b)
 
 func _is_player_vision_blocker(cell: Vector2i) -> bool:
-	return not _is_inside_map(cell) or _is_wall(cell)
+	return _is_vision_blocker(cell)
 
 func _manhattan_distance(a: Vector2i, b: Vector2i) -> int:
 	return abs(a.x - b.x) + abs(a.y - b.y)
@@ -862,7 +991,7 @@ func _setup_chase_astar(current_enemy_index: int) -> void:
 	for y in range(_map_height()):
 		for x in range(_map_width()):
 			var cell := Vector2i(x, y)
-			astar_grid.set_point_solid(cell, _is_wall(cell))
+			astar_grid.set_point_solid(cell, _is_movement_blocker(cell))
 
 	for index in range(enemies.size()):
 		if index == current_enemy_index or not enemies[index]["alive"]:
@@ -894,7 +1023,7 @@ func _raw_detection_cells(origin: Vector2i, facing: Vector2i) -> Array[Vector2i]
 	return cells
 
 func _has_detection_line_of_sight(origin: Vector2i, target: Vector2i) -> bool:
-	if not _is_inside_map(target) or _is_wall(target):
+	if not _is_inside_map(target) or _is_vision_blocker(target):
 		return false
 
 	var delta := target - origin
@@ -909,7 +1038,7 @@ func _has_detection_line_of_sight(origin: Vector2i, target: Vector2i) -> bool:
 		if cell == origin or _has_cell(visited, cell):
 			continue
 		visited.append(cell)
-		if _is_wall(cell):
+		if _is_vision_blocker(cell):
 			return false
 	return true
 
@@ -920,7 +1049,7 @@ func _has_cell(cells: Array, target: Vector2i) -> bool:
 	return false
 
 func _is_walkable_cell(cell: Vector2i) -> bool:
-	return _is_inside_map(cell) and not _is_wall(cell)
+	return _is_inside_map(cell) and not _is_movement_blocker(cell)
 
 func _is_inside_map(cell: Vector2i) -> bool:
 	return cell.x >= 0 and cell.y >= 0 and cell.x < _map_width() and cell.y < _map_height()
@@ -961,6 +1090,7 @@ func _update_hud() -> void:
 		_living_enemy_count(),
 		last_event,
 	]
+	interaction_prompt.visible = choosing_interaction_direction
 
 func _draw() -> void:
 	_draw_player_hp_hearts()
@@ -1007,6 +1137,38 @@ func _draw_map() -> void:
 				draw_rect(rect.grow(-10), Color(0.25, 0.27, 0.29))
 
 			draw_rect(rect, Color(0.07, 0.08, 0.09), false, 2.0)
+			if _is_door(cell):
+				_draw_door(cell, doors[_cell_key(cell)])
+
+func _draw_door(cell: Vector2i, door: Dictionary) -> void:
+	var rect := _cell_rect(cell)
+	var frame_color := Color(0.20, 0.10, 0.04)
+	var door_color := Color(0.58, 0.31, 0.10)
+	var highlight_color := Color(0.82, 0.54, 0.20)
+	var shadow_color := Color(0.10, 0.05, 0.02)
+	var is_horizontal := int(door["orientation"]) == DoorOrientation.HORIZONTAL
+
+	if bool(door["open"]):
+		if is_horizontal:
+			draw_rect(Rect2(rect.position + Vector2(3, 4), Vector2(7, rect.size.y - 8)), frame_color)
+			draw_rect(Rect2(rect.end - Vector2(10, rect.size.y - 4), Vector2(7, rect.size.y - 8)), frame_color)
+		else:
+			draw_rect(Rect2(rect.position + Vector2(4, 3), Vector2(rect.size.x - 8, 7)), frame_color)
+			draw_rect(Rect2(rect.end - Vector2(rect.size.x - 4, 10), Vector2(rect.size.x - 8, 7)), frame_color)
+		return
+
+	if is_horizontal:
+		var panel := Rect2(rect.position + Vector2(8, 3), Vector2(rect.size.x - 16, rect.size.y - 6))
+		draw_rect(panel, shadow_color)
+		draw_rect(panel.grow(-3), door_color)
+		draw_rect(Rect2(panel.position + Vector2(6, 4), Vector2(4, panel.size.y - 8)), highlight_color)
+		draw_circle(panel.position + Vector2(panel.size.x - 7, panel.size.y * 0.5), 2.5, highlight_color)
+	else:
+		var panel := Rect2(rect.position + Vector2(3, 8), Vector2(rect.size.x - 6, rect.size.y - 16))
+		draw_rect(panel, shadow_color)
+		draw_rect(panel.grow(-3), door_color)
+		draw_rect(Rect2(panel.position + Vector2(4, 6), Vector2(panel.size.x - 8, 4)), highlight_color)
+		draw_circle(panel.position + Vector2(panel.size.x * 0.5, panel.size.y - 7), 2.5, highlight_color)
 
 func _draw_units() -> void:
 	if player_alive or player_death_timer > 0.0:

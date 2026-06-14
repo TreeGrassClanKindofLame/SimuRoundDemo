@@ -11,6 +11,8 @@ const DIR_RIGHT := Vector2i(1, 0)
 const FOG_DENSE := 0
 const FOG_THIN := 1
 const FOG_CLEAR := 2
+const DOOR_HORIZONTAL := 0
+const DOOR_VERTICAL := 1
 
 var failures: Array[String] = []
 
@@ -18,6 +20,19 @@ func _init() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
+	_test_main_keyboard_one_waits_one_turn()
+	_test_keypad_one_does_not_wait()
+	_test_e_enters_interaction_selection_without_advancing_turn()
+	_test_direction_confirms_interaction_and_hides_prompt()
+	_test_interaction_selection_can_be_cancelled()
+	_test_interaction_without_target_still_runs_enemy_turn()
+	_test_door_interaction_toggles_open_and_closed()
+	_test_occupied_open_door_cannot_close()
+	_test_map_creates_horizontal_and_vertical_doors()
+	_test_closed_door_blocks_movement_and_open_door_allows_it()
+	_test_opening_door_changes_enemy_path_on_same_turn()
+	_test_closing_door_blocks_enemy_path_on_same_turn()
+	_test_closed_door_blocks_player_and_enemy_vision()
 	_test_player_wins_empty_cell_contest()
 	_test_enemy_enters_player_vacated_cell()
 	_test_direct_swap_blocks_and_collides()
@@ -106,6 +121,193 @@ func _resolve(main: Node, player_delta: Vector2i, enemy_deltas: Array[Vector2i])
 		intents.append(main._make_turn_intent(str(enemy["id"]), index, enemy["pos"], enemy_deltas[index]))
 	main._apply_intent_facings(intents)
 	main._resolve_turn_intents(intents, snapshot)
+
+func _test_main_keyboard_one_waits_one_turn() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(2, 1), DIR_RIGHT, [])
+	var start_pos: Vector2i = main.player_pos
+	var start_facing: Vector2i = main.player_facing
+
+	var handled: bool = main._try_play_key_action(KEY_1)
+
+	_expect_true("main keyboard 1 wait: key handled", handled)
+	_expect_eq("main keyboard 1 wait: player stays", main.player_pos, start_pos)
+	_expect_eq("main keyboard 1 wait: facing unchanged", main.player_facing, start_facing)
+	_expect_eq("main keyboard 1 wait: turn advances", main.turn_count, 1)
+	_expect_eq("main keyboard 1 wait: event", main.last_event, "Player waits")
+	_free_main(main)
+
+func _test_keypad_one_does_not_wait() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(2, 1), DIR_RIGHT, [])
+
+	var handled: bool = main._try_play_key_action(KEY_KP_1)
+
+	_expect_true("keypad 1 ignored: key not handled", not handled)
+	_expect_eq("keypad 1 ignored: turn unchanged", main.turn_count, 0)
+	_free_main(main)
+
+func _test_e_enters_interaction_selection_without_advancing_turn() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(4, 1), DIR_DOWN, [])
+	var start_pos: Vector2i = main.player_pos
+	var start_facing: Vector2i = main.player_facing
+
+	var handled: bool = main._try_play_key_action(KEY_E)
+
+	_expect_true("E selection: key handled", handled)
+	_expect_true("E selection: choosing direction", main.choosing_interaction_direction)
+	_expect_true("E selection: red prompt visible", main.interaction_prompt.visible)
+	_expect_eq("E selection: player stays", main.player_pos, start_pos)
+	_expect_eq("E selection: facing unchanged", main.player_facing, start_facing)
+	_expect_eq("E selection: turn unchanged", main.turn_count, 0)
+	_expect_true("E selection: door unchanged", main._is_closed_door(Vector2i(4, 2)))
+	_free_main(main)
+
+func _test_direction_confirms_interaction_and_hides_prompt() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(4, 1), DIR_RIGHT, [])
+	var start_pos: Vector2i = main.player_pos
+	var start_facing: Vector2i = main.player_facing
+
+	main._try_play_key_action(KEY_E)
+	var handled: bool = main._try_play_key_action(KEY_S)
+
+	_expect_true("direction confirmation: key handled", handled)
+	_expect_true("direction confirmation: selection ends", not main.choosing_interaction_direction)
+	_expect_true("direction confirmation: prompt hidden", not main.interaction_prompt.visible)
+	_expect_eq("direction confirmation: player stays", main.player_pos, start_pos)
+	_expect_eq("direction confirmation: facing unchanged", main.player_facing, start_facing)
+	_expect_eq("direction confirmation: turn advances", main.turn_count, 1)
+	_expect_true("direction confirmation: door opens", not main._is_closed_door(Vector2i(4, 2)))
+	_free_main(main)
+
+func _test_interaction_selection_can_be_cancelled() -> void:
+	var main := _new_main()
+
+	main._try_play_key_action(KEY_E)
+	var handled: bool = main._try_play_key_action(KEY_ESCAPE)
+
+	_expect_true("interaction cancel: key handled", handled)
+	_expect_true("interaction cancel: selection ends", not main.choosing_interaction_direction)
+	_expect_true("interaction cancel: prompt hidden", not main.interaction_prompt.visible)
+	_expect_eq("interaction cancel: turn unchanged", main.turn_count, 0)
+	_free_main(main)
+
+func _test_interaction_without_target_still_runs_enemy_turn() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(1, 1), DIR_DOWN, [
+		_make_enemy(main, "enemy_a", Vector2i(3, 1), DIR_LEFT),
+	])
+	var enemy_start: Vector2i = main.enemies[0]["pos"]
+
+	main._try_play_key_action(KEY_E)
+	var handled: bool = main._try_play_key_action(KEY_S)
+
+	_expect_true("empty interaction: key handled", handled)
+	_expect_eq("empty interaction: turn advances", main.turn_count, 1)
+	_expect_eq("empty interaction: player stays", main.player_pos, Vector2i(1, 1))
+	_expect_true("empty interaction: enemy acts", main.enemies[0]["pos"] != enemy_start)
+	_expect_eq("empty interaction: event", main.last_event, "Nothing to interact with")
+	_free_main(main)
+
+func _test_door_interaction_toggles_open_and_closed() -> void:
+	var main := _new_main()
+	_set_units(main, Vector2i(4, 1), DIR_DOWN, [])
+	var door_cell := Vector2i(4, 2)
+
+	main._play_interaction_turn(DIR_DOWN)
+	_expect_true("door toggle: opens", not main._is_closed_door(door_cell))
+	_expect_eq("door toggle: open event", main.last_event, "Door opens")
+
+	main._play_interaction_turn(DIR_DOWN)
+	_expect_true("door toggle: closes", main._is_closed_door(door_cell))
+	_expect_eq("door toggle: close event", main.last_event, "Door closes")
+	_expect_eq("door toggle: two turns", main.turn_count, 2)
+	_free_main(main)
+
+func _test_occupied_open_door_cannot_close() -> void:
+	var main := _new_main()
+	var door_cell := Vector2i(4, 2)
+	main._set_door_open(door_cell, true)
+	_set_units(main, Vector2i(4, 1), DIR_DOWN, [
+		_make_enemy(main, "door_enemy", door_cell, DIR_DOWN, STATE_IDLE),
+	])
+
+	main._play_interaction_turn(DIR_DOWN)
+
+	_expect_true("occupied door: remains open", not main._is_closed_door(door_cell))
+	_expect_eq("occupied door: enemy remains", main.enemies[0]["pos"], door_cell)
+	_expect_eq("occupied door: turn advances", main.turn_count, 1)
+	_expect_eq("occupied door: event", main.last_event, "Door cannot close while occupied")
+	_free_main(main)
+
+func _test_map_creates_horizontal_and_vertical_doors() -> void:
+	var main := _new_main()
+	var horizontal_cell := Vector2i(4, 2)
+	var vertical_cell := Vector2i(9, 4)
+
+	_expect_true("door map: horizontal exists", main._is_door(horizontal_cell))
+	_expect_true("door map: vertical exists", main._is_door(vertical_cell))
+	_expect_eq("door map: horizontal orientation", main.doors[main._cell_key(horizontal_cell)]["orientation"], DOOR_HORIZONTAL)
+	_expect_eq("door map: vertical orientation", main.doors[main._cell_key(vertical_cell)]["orientation"], DOOR_VERTICAL)
+	_expect_true("door map: horizontal starts closed", main._is_closed_door(horizontal_cell))
+	_expect_true("door map: vertical starts closed", main._is_closed_door(vertical_cell))
+	_free_main(main)
+
+func _test_closed_door_blocks_movement_and_open_door_allows_it() -> void:
+	var main := _new_main()
+	var door_cell := Vector2i(4, 2)
+
+	_expect_true("door movement: closed door blocked", not main._is_walkable_cell(door_cell))
+	main._set_door_open(door_cell, true)
+	_expect_true("door movement: open door walkable", main._is_walkable_cell(door_cell))
+	_free_main(main)
+
+func _test_opening_door_changes_enemy_path_on_same_turn() -> void:
+	var main := _new_main()
+	var door_cell := Vector2i(4, 2)
+	_set_units(main, Vector2i(4, 1), DIR_DOWN, [
+		_make_enemy(main, "enemy_a", Vector2i(4, 3), DIR_UP),
+	])
+
+	main._play_interaction_turn(DIR_DOWN)
+
+	_expect_true("open timing: door opens", not main._is_closed_door(door_cell))
+	_expect_eq("open timing: enemy enters door this turn", main.enemies[0]["pos"], door_cell)
+	_free_main(main)
+
+func _test_closing_door_blocks_enemy_path_on_same_turn() -> void:
+	var main := _new_main()
+	var door_cell := Vector2i(4, 2)
+	main._set_door_open(door_cell, true)
+	_set_units(main, Vector2i(4, 1), DIR_DOWN, [
+		_make_enemy(main, "enemy_a", Vector2i(4, 3), DIR_UP),
+	])
+
+	main._play_interaction_turn(DIR_DOWN)
+
+	_expect_true("close timing: door closes", main._is_closed_door(door_cell))
+	_expect_true("close timing: enemy cannot enter door", main.enemies[0]["pos"] != door_cell)
+	_free_main(main)
+
+func _test_closed_door_blocks_player_and_enemy_vision() -> void:
+	var main := _new_main()
+	var door_cell := Vector2i(4, 2)
+	_set_units(main, Vector2i(4, 1), DIR_DOWN, [
+		_make_enemy(main, "enemy_a", Vector2i(4, 3), DIR_UP, STATE_IDLE),
+	])
+
+	_expect_true("door vision: closed door visible", main._is_cell_clear(door_cell))
+	_expect_true("door vision: player blocked behind closed door", not main._has_player_line_of_sight(main.player_pos, Vector2i(4, 3)))
+	_expect_true("door vision: enemy detection blocked", not main._enemy_can_detect_player(main.enemies[0]))
+
+	main._set_door_open(door_cell, true)
+	main._update_player_fog()
+	_expect_true("door vision: player sees through open door", main._has_player_line_of_sight(main.player_pos, Vector2i(4, 3)))
+	_expect_true("door vision: cell behind open door revealed", main._is_cell_clear(Vector2i(4, 3)))
+	_expect_true("door vision: enemy detects through open door", main._enemy_can_detect_player(main.enemies[0]))
+	_free_main(main)
 
 func _test_player_wins_empty_cell_contest() -> void:
 	var main := _new_main()
@@ -299,7 +501,7 @@ func _test_fog_reveals_walls_next_to_visible_floors() -> void:
 	var main := _new_main()
 	_set_units(main, Vector2i(1, 1), DIR_RIGHT, [])
 
-	_expect_eq("fog adjacent wall reveal: wall beside visible floor clear", main._fog_state(Vector2i(4, 2)), FOG_CLEAR)
+	_expect_eq("fog adjacent wall reveal: wall beside visible floor clear", main._fog_state(Vector2i(3, 2)), FOG_CLEAR)
 	_expect_eq("fog adjacent wall reveal: out-of-range wall remains dense", main._fog_state(Vector2i(6, 0)), FOG_DENSE)
 	_free_main(main)
 

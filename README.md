@@ -6,6 +6,11 @@ Godot 4 simultaneous-turn grid game demo.
 
 - Fixed grid map with walls and floors
 - WASD player movement
+- Press E, then W/A/S/D, to interact with an adjacent cell in the selected direction
+- Entering interaction selection does not advance time; confirming a direction performs the action and advances one turn
+- Press E again or Escape to cancel direction selection without advancing time
+- Horizontal and vertical doors can be opened or closed; closed doors block movement and vision, while open doors behave like floor
+- Interaction changes a door before enemies choose their action for that turn, and every interaction attempt advances time
 - Press V to toggle enemy detection ranges
 - Units face their latest attempted movement direction
 - Player and enemy units use temporary four-direction humanoid pixel sprites
