@@ -125,7 +125,15 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not key_event.pressed or key_event.echo:
 		return
 
-	match key_event.keycode:
+	if not _try_play_key_action(key_event.keycode):
+		return
+
+	get_viewport().set_input_as_handled()
+
+func _try_play_key_action(keycode: Key) -> bool:
+	match keycode:
+		KEY_1:
+			_play_turn(DIR_NONE)
 		KEY_W:
 			_play_turn(DIR_UP)
 		KEY_S:
@@ -142,9 +150,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_hud()
 			queue_redraw()
 		_:
-			return
-
-	get_viewport().set_input_as_handled()
+			return false
+	return true
 
 func _setup_audio() -> void:
 	sound_players["bump"] = _create_sound_player(_make_tone(90.0, 60.0, 0.08, 0.35))
@@ -245,7 +252,7 @@ func _play_turn(player_delta: Vector2i) -> void:
 	if player_alive:
 		_update_player_fog()
 		alert_event = _update_enemy_alerts()
-	if player_alive and alert_event != "" and (turn_event == "" or turn_event == "Player moves"):
+	if player_alive and alert_event != "" and (turn_event == "" or turn_event == "Player moves" or turn_event == "Player waits"):
 		last_event = alert_event
 	elif player_alive and turn_event != "":
 		last_event = turn_event
@@ -425,6 +432,10 @@ func _resolve_turn_intents(intents: Array[Dictionary], snapshot: Dictionary) -> 
 
 	if player_alive and moved_player:
 		_add_unique_event(events, "Player moves")
+	elif player_alive:
+		var player_intent: Dictionary = intent_by_unit.get("player", {})
+		if not player_intent.is_empty() and player_intent["delta"] == DIR_NONE:
+			_add_unique_event(events, "Player waits")
 	if moved_enemy:
 		_add_unique_event(events, "Enemy chases player")
 
@@ -596,6 +607,9 @@ func _select_turn_event(events: Array[String]) -> String:
 			return event_text
 	for event_text in events:
 		if event_text == "Player moves":
+			return event_text
+	for event_text in events:
+		if event_text == "Player waits":
 			return event_text
 	if events.size() > 0:
 		return events[0]
