@@ -245,8 +245,9 @@ func _reset_demo(play_reset_sound := false) -> void:
 		_create_enemy(Vector2i(3, 7), AIType.IDLE),
 		_create_enemy(Vector2i(12, 7), AIType.IDLE),
 	]
-	_reset_fog()
-	_update_player_fog()
+	# FOG TEMP DISABLED: Uncomment these calls to restore fog initialization.
+	# _reset_fog()
+	# _update_player_fog()
 	if play_reset_sound:
 		_play_sound("reset")
 	_update_hud()
@@ -279,7 +280,8 @@ func _play_turn(player_delta: Vector2i, player_action_event := "") -> void:
 	var turn_event := _resolve_turn_intents(intents, snapshot)
 	var alert_event := ""
 	if player_alive:
-		_update_player_fog()
+		# FOG TEMP DISABLED: Uncomment to restore fog updates after each turn.
+		# _update_player_fog()
 		alert_event = _update_enemy_alerts()
 	if player_alive and player_action_event != "":
 		if _is_high_priority_turn_event(turn_event):
@@ -859,9 +861,11 @@ func _fog_state(cell: Vector2i) -> int:
 func _is_cell_clear(cell: Vector2i) -> bool:
 	return _fog_state(cell) == FogState.CLEAR
 
-func _should_draw_enemy(enemy: Dictionary) -> bool:
-	var enemy_pos: Vector2i = enemy["pos"]
-	return _is_cell_clear(enemy_pos)
+func _should_draw_enemy(_enemy: Dictionary) -> bool:
+	# FOG TEMP DISABLED: Restore these lines and remove the unconditional return.
+	# var enemy_pos: Vector2i = _enemy["pos"]
+	# return _is_cell_clear(enemy_pos)
+	return true
 
 func _update_enemy_alerts() -> String:
 	var alerted_count := 0
@@ -1097,7 +1101,8 @@ func _draw() -> void:
 	_draw_map()
 	_draw_detection_ranges()
 	_draw_units()
-	_draw_fog()
+	# FOG TEMP DISABLED: Uncomment to restore the fog overlay.
+	# _draw_fog()
 
 func _draw_player_hp_hearts() -> void:
 	var heart_width := _heart_width(HEART_BLOCK)
@@ -1207,8 +1212,9 @@ func _draw_detection_ranges() -> void:
 		var range_color := Color(0.22, 0.55, 1.0, 0.24)
 		var border_color := Color(0.30, 0.70, 1.0, 0.55)
 		for cell in _visible_detection_cells(enemy):
-			if not _is_cell_clear(cell):
-				continue
+			# FOG TEMP DISABLED: Uncomment to hide detection cells outside clear fog.
+			# if not _is_cell_clear(cell):
+			# 	continue
 			var rect := _cell_rect(cell).grow(-6)
 			draw_rect(rect, range_color)
 			draw_rect(rect, border_color, false, 2.0)
